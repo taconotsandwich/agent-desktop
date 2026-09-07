@@ -121,6 +121,18 @@ impl WindowDriver for KwinWindows {
             root.get("stacking").and_then(|v| v.as_u64()).unwrap_or(999),
             root.get("activeCaption").and_then(|v| v.as_str()).unwrap_or("?"),
         );
+        for v in &items {
+            let g = v.get("geometry").and_then(|g| g.as_array());
+            let ok_geo = g.map(|a| a.len() == 4).unwrap_or(false);
+            eprintln!(
+                "KWIN_ITEM uuid={:?} class={:?} caption={:?} geo_ok={} geo={:?}",
+                v.get("uuid"),
+                v.get("resourceClass"),
+                v.get("caption").and_then(|c| c.as_str()).map(|s| s.chars().take(20).collect::<String>()),
+                ok_geo,
+                v.get("geometry"),
+            );
+        }
         Ok(items
             .into_iter()
             .filter_map(|v| {
