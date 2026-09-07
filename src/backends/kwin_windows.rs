@@ -89,21 +89,32 @@ impl WindowDriver for KwinWindows {
             for (var i = 0; i < windows.length; i++) {
                 var w = windows[i];
                 var g = w.frameGeometry;
+                var output = w.output;
                 out.push({
                     uuid: w.internalId ? w.internalId.toString() : ("idx:" + i),
                     caption: w.caption || "",
                     resourceClass: w.resourceClass || "",
+                    pid: w.pid || 0,
                     geometry: [g.x, g.y, g.width, g.height],
-                    active: (ws.activeWindow === w)
+                    screen: output ? output.name : "",
+                    active: (ws.activeWindow === w),
+                    minimized: !!w.minimized
                 });
             }
-            return out;
+            return {windows: out, count: windows.length,
+                    stacking: ws.stackingOrder.length,
+                    activeCaption: ws.activeWindow ? ws.activeWindow.caption : ""};
         "#;
         let payload = self.run(body).await.map_err(|e| e.tool(true))?;
-        let items: Vec<serde_json::Value> =
+        let root: serde_json::Value =
             serde_json::from_str(&payload).map_err(|e| BackendError::ExternalCommandFailed {
                 stderr: format!("window list parse: {e}"),
             }.tool(true))?;
+        let items: Vec<serde_json::Value> = root
+            .get("windows")
+            .and_then(|w| w.as_array())
+            .cloned()
+            .unwrap_or_default();
         Ok(items
             .into_iter()
             .filter_map(|v| {
