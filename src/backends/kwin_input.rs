@@ -247,14 +247,14 @@ impl EisSession {
         })
     }
 
-    fn keyboard_iface(&self) -> Result<(reis::event::Device, ei::Keyboard), BackendError> {
-        let dev = self.device.clone();
-        let kb = dev.interface::<ei::Keyboard>().ok_or_else(|| {
+    fn keyboard_iface(&self) -> Result<(ei::Device, ei::Keyboard), BackendError> {
+        let inner = self.device.device().clone();
+        let kb = self.device.interface::<ei::Keyboard>().ok_or_else(|| {
             BackendError::InputDispatchFailed {
                 detail: "device missing Keyboard interface".into(),
             }
         })?;
-        Ok((dev, kb))
+        Ok((inner, kb))
     }
 
     fn frame(&self, dev: &ei::Device) -> Result<(), BackendError> {

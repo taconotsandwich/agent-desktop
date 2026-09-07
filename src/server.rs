@@ -707,12 +707,6 @@ impl AgentDesktop {
             })
     }
 
-    fn _element_payload(&self, _r: &Ref) -> Result<String, BackendError> {
-        // Walk() mints refs whose .0 IS the base64 payload. Window refs are
-        // kwin:<uuid> and never reach here (checked by callers).
-        Ok(r.0.clone())
-    }
-
     /// Window ref → owning app's AT-SPI root via pid match.
     async fn window_root<'a>(
         &self,
