@@ -15,6 +15,7 @@ use crate::keymap::Modifier;
 use crate::registry::Registry;
 use crate::types::{Diff, Ref};
 use atspi::proxy::accessible::{AccessibleProxy, ObjectRefExt};
+use atspi::proxy::proxy_ext::ProxyExt;
 use base64::Engine as _;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -74,13 +75,14 @@ fn fail(e: BackendError, retryable: bool) -> Result<CallToolResult, McpError> {
         "diff": Diff::default()}))
 }
 
-/// Clone the probed registry or answer `no_backend`.
-async fn registry_of(slf: &AgentDesktop) -> Result<Registry, Result<CallToolResult, McpError>> {
-    match slf.registry.read().await.as_ref() {
-        Some(r) => Ok(r.clone()),
-        None => Err(ok(json!({"ok": false,
-            "error": {"code": "no_backend", "message": "no compositor probed yet", "retryable": false}}))),
-    }
+/// Clone the probed registry, if any.
+async fn registry_of(slf: &AgentDesktop) -> Option<Registry> {
+    slf.registry.read().await.as_ref().cloned()
+}
+
+fn no_backend() -> Result<CallToolResult, McpError> {
+    ok(json!({"ok": false,
+        "error": {"code": "no_backend", "message": "no compositor probed yet", "retryable": false}}))
 }
 
 // ---- Observation (read-only) ----
@@ -182,7 +184,10 @@ impl AgentDesktop {
         &self,
         Parameters(_args): Parameters<ObserveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         let wins = match query_windows(&reg).await {
             Ok(w) => w,
             Err(e) => return fail(e, true),
@@ -250,7 +255,10 @@ impl AgentDesktop {
         &self,
         Parameters(args): Parameters<ScreenshotArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         let edge = args.max_long_edge.unwrap_or(1280).clamp(256, 1568);
         let region = args.region.unwrap_or_else(|| "full".into());
         if region != "full" {
@@ -293,7 +301,10 @@ impl AgentDesktop {
         &self,
         Parameters(args): Parameters<WindowQueryArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         let wins = match query_windows(&reg).await {
             Ok(w) => w,
             Err(e) => return fail(e, true),
@@ -410,7 +421,10 @@ impl AgentDesktop {
         &self,
         Parameters(args): Parameters<MouseArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         let op = args.op.to_ascii_lowercase();
         let button = args.button.unwrap_or(Button::Left);
         let hold: Vec<Modifier> = match args.hold.unwrap_or_default() {
@@ -533,7 +547,10 @@ impl AgentDesktop {
         if !args.text.is_ascii() {
             return self.paste_text(&args.text).await;
         }
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         match reg.input.type_text(args.text).await {
             Ok(()) => ok(json!({"ok": true})),
             Err(t) => {
@@ -564,7 +581,10 @@ impl AgentDesktop {
                 false,
             );
         }
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         match reg.input.key(args.keys).await {
             Ok(()) => ok(json!({"ok": true})),
             Err(t) => ok(json!({"ok": false,
@@ -583,7 +603,10 @@ impl AgentDesktop {
         if !self.refs.check(&args.window_ref).await {
             return stale("ref expired");
         }
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         let action = args.action.to_ascii_lowercase();
         let geo = args.geometry.map(|g| crate::drivers::Bbox {
             x: g[0],
@@ -666,7 +689,10 @@ impl AgentDesktop {
         if let Err(e) = clip::set(self.session, text).await {
             return fail(e, true);
         }
-        let reg = registry_of(self).await?;
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
         if let Err(t) = reg.input.key(vec!["ctrl+v".into()]).await {
             return ok(json!({"ok": false,
                 "error": {"code": t.code, "message": t.message, "retryable": true}}));

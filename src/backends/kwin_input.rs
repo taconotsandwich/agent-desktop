@@ -46,25 +46,7 @@ impl InputDriver for KwinInput {
     }
 
     async fn probe(&self) -> Probe {
-        match self.bus.list_names().await {
-            Ok(names) => {
-                let ok = names.iter().any(|n| n.as_str() == "org.kde.KWin");
-                Probe {
-                    id: self.id(),
-                    ok,
-                    detail: if ok {
-                        "org.kde.KWin on session bus (EIS available on Plasma 6)".into()
-                    } else {
-                        "org.kde.KWin not on session bus".into()
-                    },
-                }
-            }
-            Err(e) => Probe {
-                id: self.id(),
-                ok: false,
-                detail: format!("bus list_names: {e}"),
-            },
-        }
+        super::kwin_probe(&self.bus, self.id()).await
     }
 
     async fn click(
