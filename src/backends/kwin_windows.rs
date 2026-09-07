@@ -172,25 +172,6 @@ pub fn parse_entries(items: &[serde_json::Value]) -> Vec<WindowInfo> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fractional_geometry_rounds_instead_of_dropping() {
-        let items = vec![
-            serde_json::json!({"uuid": "{a}", "caption": "KCalc", "resourceClass": "org.kde.kcalc",
-                "geometry": [580, 280, 640, 520.625], "active": true}),
-            serde_json::json!({"uuid": "{b}", "caption": "", "resourceClass": "plasmashell",
-                "geometry": [0, 0, 1800, 1125], "active": false}),
-        ];
-        let wins = parse_entries(&items);
-        assert_eq!(wins.len(), 2);
-        assert_eq!(wins[0].geometry.h, 521);
-        assert!(wins[0].is_active);
-    }
-}
-
 impl KwinWindows {
     async fn mutate(&self, id: &Ref, action: &str, geo: Option<Bbox>) -> Result<(), ToolError> {
         let uuid = Self::uuid_of(id).map_err(|e| e.tool(false))?;
@@ -337,4 +318,23 @@ pub async fn run_script(
         .await;
     drop(tmp);
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fractional_geometry_rounds_instead_of_dropping() {
+        let items = vec![
+            serde_json::json!({"uuid": "{a}", "caption": "KCalc", "resourceClass": "org.kde.kcalc",
+                "geometry": [580, 280, 640, 520.625], "active": true}),
+            serde_json::json!({"uuid": "{b}", "caption": "", "resourceClass": "plasmashell",
+                "geometry": [0, 0, 1800, 1125], "active": false}),
+        ];
+        let wins = parse_entries(&items);
+        assert_eq!(wins.len(), 2);
+        assert_eq!(wins[0].geometry.h, 521);
+        assert!(wins[0].is_active);
+    }
 }
