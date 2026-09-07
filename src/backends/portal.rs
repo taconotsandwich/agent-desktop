@@ -92,7 +92,7 @@ async fn portal_proxy<'a>(
     })
 }
 
-async fn portal_present(conn: &Connection) -> bool {
+pub async fn portal_present(conn: &Connection) -> bool {
     let Ok(proxy) = zbus::fdo::DBusProxy::new(conn).await else {
         return false;
     };
@@ -176,7 +176,8 @@ async fn capture_full(bus: &Connection, max_long_edge: u32) -> Result<Shot, Back
     }
     let uri = results
         .get("uri")
-        .and_then(|v| String::try_from(v).ok())
+        .and_then(|v| <&str>::try_from(v).ok())
+        .map(str::to_string)
         .ok_or_else(|| BackendError::ExternalCommandFailed {
             stderr: "screenshot response missing uri".into(),
         })?;
@@ -247,7 +248,7 @@ pub async fn ensure_session(bus: &Connection) -> Result<OwnedObjectPath, Backend
     }
     let session: OwnedObjectPath = results
         .get("session_handle")
-        .and_then(|v| OwnedObjectPath::try_from(v).ok())
+        .and_then(|v| OwnedObjectPath::try_from(v.clone()).ok())
         .ok_or_else(|| BackendError::ExternalCommandFailed {
             stderr: "CreateSession missing session_handle".into(),
         })?;
