@@ -4,13 +4,21 @@
 //! (KDE/GNOME). Override with `AGENT_DESKTOP_BACKEND=kwin|gnome|x11|fake`
 //! for tests and nested sessions.
 
+pub mod gnome_windows;
 pub mod kwin_input;
 pub mod kwin_shot;
 pub mod kwin_windows;
+pub mod portal;
+pub mod portal_input;
+pub mod x11;
 
+pub use gnome_windows::GnomeWindows;
 pub use kwin_input::KwinInput;
 pub use kwin_shot::KwinShot;
 pub use kwin_windows::KwinWindows;
+pub use portal::{PortalShot, portal_present};
+pub use portal_input::PortalInput;
+pub use x11::{X11Input, X11Shot, X11Windows};
 
 use crate::drivers::{Desktop, Probe, SessionType};
 

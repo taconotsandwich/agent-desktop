@@ -173,6 +173,15 @@ impl EisSession {
             })?;
         let std_fd: std::os::fd::OwnedFd = owned_fd.into();
         let raw_fd = std_fd.into_raw_fd();
+        Self::open_from_fd(raw_fd, expect_keyboard, expect_pointer).await
+    }
+
+    /// Handshake over an already-connected EIS fd (portal RemoteDesktop reuses this).
+    pub async fn open_from_fd(
+        raw_fd: std::os::fd::RawFd,
+        expect_keyboard: bool,
+        expect_pointer: bool,
+    ) -> Result<Self, BackendError> {
         let join = tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
