@@ -115,50 +115,7 @@ impl WindowDriver for KwinWindows {
             .and_then(|w| w.as_array())
             .cloned()
             .unwrap_or_default();
-        eprintln!(
-            "KWIN_DIAG count={} stacking={} active={:?}",
-            root.get("count").and_then(|v| v.as_u64()).unwrap_or(999),
-            root.get("stacking").and_then(|v| v.as_u64()).unwrap_or(999),
-            root.get("activeCaption").and_then(|v| v.as_str()).unwrap_or("?"),
-        );
-        for v in &items {
-            let g = v.get("geometry").and_then(|g| g.as_array());
-            let ok_geo = g.map(|a| a.len() == 4).unwrap_or(false);
-            eprintln!(
-                "KWIN_ITEM uuid={:?} class={:?} caption={:?} geo_ok={} geo={:?}",
-                v.get("uuid"),
-                v.get("resourceClass"),
-                v.get("caption").and_then(|c| c.as_str()).map(|s| s.chars().take(20).collect::<String>()),
-                ok_geo,
-                v.get("geometry"),
-            );
-        }
-        Ok(items
-            .into_iter()
-            .filter_map(|v| {
-                let g = v.get("geometry")?.as_array()?;
-                let nums: Vec<i32> = g.iter().filter_map(|n| n.as_i64().map(|n| n as i32)).collect();
-                if nums.len() != 4 {
-                    return None;
-                }
-                Some(WindowInfo {
-                    window_ref: Ref(format!(
-                        "kwin:{}",
-                        v.get("uuid")?.as_str().unwrap_or("?")
-                    )),
-                    title: v.get("caption")?.as_str().unwrap_or("").into(),
-                    class: v.get("resourceClass")?.as_str().unwrap_or("").into(),
-                    geometry: Bbox {
-                        x: nums[0],
-                        y: nums[1],
-                        w: nums[2].max(0) as u32,
-                        h: nums[3].max(0) as u32,
-                    },
-                    screen: 0,
-                    is_active: v.get("active")?.as_bool().unwrap_or(false),
-                })
-            })
-            .collect())
+        Ok(parse_entries(&items))
     }
 
     async fn focus(&self, id: &Ref) -> Result<(), ToolError> {
@@ -178,6 +135,59 @@ impl WindowDriver for KwinWindows {
     }
     async fn move_resize(&self, id: &Ref, geo: Bbox) -> Result<(), ToolError> {
         self.mutate(id, "move_resize", Some(geo)).await
+    }
+}
+
+/// Parse script payload entries. NOTE: KWin emits fractional geometry under
+/// fractional scaling (e.g. 520.625) — parse as f64 and round, never strict
+/// as_i64 (which silently drops scaled windows).
+pub fn parse_entries(items: &[serde_json::Value]) -> Vec<WindowInfo> {
+    items
+        .iter()
+        .filter_map(|v| {
+            let g = v.get("geometry")?.as_array()?;
+            let num = |n: &serde_json::Value| {
+                n.as_f64()
+                    .map(|f| f.round() as i32)
+                    .or_else(|| n.as_i64().map(|i| i as i32))
+            };
+            let nums: Vec<i32> = g.iter().filter_map(num).collect();
+            if nums.len() != 4 {
+                return None;
+            }
+            Some(WindowInfo {
+                window_ref: Ref(format!("kwin:{}", v.get("uuid")?.as_str().unwrap_or("?"))),
+                title: v.get("caption")?.as_str().unwrap_or("").into(),
+                class: v.get("resourceClass")?.as_str().unwrap_or("").into(),
+                geometry: Bbox {
+                    x: nums[0],
+                    y: nums[1],
+                    w: nums[2].max(0) as u32,
+                    h: nums[3].max(0) as u32,
+                },
+                screen: 0,
+                is_active: v.get("active")?.as_bool().unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fractional_geometry_rounds_instead_of_dropping() {
+        let items = vec![
+            serde_json::json!({"uuid": "{a}", "caption": "KCalc", "resourceClass": "org.kde.kcalc",
+                "geometry": [580, 280, 640, 520.625], "active": true}),
+            serde_json::json!({"uuid": "{b}", "caption": "", "resourceClass": "plasmashell",
+                "geometry": [0, 0, 1800, 1125], "active": false}),
+        ];
+        let wins = parse_entries(&items);
+        assert_eq!(wins.len(), 2);
+        assert_eq!(wins[0].geometry.h, 521);
+        assert!(wins[0].is_active);
     }
 }
 
