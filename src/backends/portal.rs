@@ -224,7 +224,6 @@ pub async fn remote_desktop_eis_fd(bus: &Connection) -> Result<std::os::fd::Owne
 }
 
 pub async fn ensure_session(bus: &Connection) -> Result<OwnedObjectPath, BackendError> {
-    use std::os::fd::FromRawFd as _;
     let proxy = portal_proxy(bus, "org.freedesktop.portal.RemoteDesktop").await?;
     let sender = sender_token(bus)?;
 

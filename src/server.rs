@@ -427,18 +427,13 @@ impl AgentDesktop {
         };
         let op = args.op.to_ascii_lowercase();
         let button = args.button.unwrap_or(Button::Left);
-        let hold: Vec<Modifier> = match args.hold.unwrap_or_default() {
-            hs => {
-                let mut out = Vec::with_capacity(hs.len());
-                for h in hs {
-                    match Modifier::parse(&h) {
-                        Ok(m) => out.push(m),
-                        Err(e) => return fail(e, false),
-                    }
-                }
-                out
+        let mut hold: Vec<Modifier> = Vec::new();
+        for h in args.hold.unwrap_or_default() {
+            match Modifier::parse(&h) {
+                Ok(m) => hold.push(m),
+                Err(e) => return fail(e, false),
             }
-        };
+        }
         let res: Result<(), BackendError> = match op.as_str() {
             "click" => {
                 let (x, y) = match (args.x, args.y) {
@@ -452,7 +447,7 @@ impl AgentDesktop {
                         );
                     }
                 };
-                let count = args.count.unwrap_or(1).max(1).min(3);
+                let count = args.count.unwrap_or(1).clamp(1, 3);
                 let mut r = Ok(());
                 for _ in 0..count {
                     r = reg
