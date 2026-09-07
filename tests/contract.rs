@@ -3,7 +3,7 @@
 
 use agent_desktop::{
     core::RefStore,
-    drivers::{Button, ShotTarget},
+    drivers::{Button, InputDriver, ShotDriver, ShotTarget, WindowDriver},
     fake::{FakeInput, FakeShot, FakeWindows},
     registry::Registry,
     types::Ref,
