@@ -158,11 +158,11 @@ impl KwinWindows {
         // Escape for JS single-quoted context (uuids are internalIds; quotes illegal but be safe).
         let uuid = uuid.replace('\\', "\\\\").replace('\'', "\\'");
         let op = match action {
-            "focus" => format!("ws.activeWindow = list[i];"),
-            "minimize" => format!("list[i].minimized = true;"),
-            "maximize" => format!("list[i].setMaximize(true, true);"),
-            "restore" => format!("list[i].minimized = false; list[i].setMaximize(false, false);"),
-            "close" => format!("list[i].closeWindow();"),
+            "focus" => "ws.activeWindow = list[i];".to_string(),
+            "minimize" => "list[i].minimized = true;".to_string(),
+            "maximize" => "list[i].setMaximize(true, true);".to_string(),
+            "restore" => "list[i].minimized = false; list[i].setMaximize(false, false);".to_string(),
+            "close" => "list[i].closeWindow();".to_string(),
             "move_resize" => {
                 let g = geo.unwrap();
                 format!(

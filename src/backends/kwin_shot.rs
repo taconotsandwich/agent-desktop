@@ -134,7 +134,7 @@ async fn capture_workspace(
     let img = decode_qimage(&bytes, width, height, stride, qfmt)?;
 
     // Downscale to the vision sweet spot; record coord size for click mapping.
-    let edge = max_long_edge.max(256).min(1568);
+    let edge = max_long_edge.clamp(256, 1568);
     let (cw, ch) = img.dimensions();
     let scale = (edge as f32 / cw.max(ch) as f32).min(1.0);
     let (dw, dh) = ((cw as f32 * scale) as u32, (ch as f32 * scale) as u32);
