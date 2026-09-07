@@ -204,7 +204,12 @@ pub fn keycode_for_char(ch: char) -> Option<u32> {
 
 /// True when the character needs Shift held on a US keymap.
 pub fn shift_required(ch: char) -> bool {
-    ch.is_ascii_uppercase() || matches!(ch, "!@#$%^&*()_+{}|:\"<>?~")
+    ch.is_ascii_uppercase()
+        || matches!(
+            ch,
+            '!' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '(' | ')' | '_' | '+' | '{' | '}'
+                | '|' | ':' | '"' | '<' | '>' | '?' | '~'
+        )
 }
 
 pub fn parse_button(name: &str) -> Result<u32, BackendError> {
