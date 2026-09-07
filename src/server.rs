@@ -677,18 +677,19 @@ impl AgentDesktop {
 }
 
 impl AgentDesktop {
-    /// Unicode / unmappable-text path: clipboard set + Ctrl+V, restore old
-    /// clipboard best-effort. Bypasses keymap limits entirely.
+    /// Unicode / unmappable-text path: set both selections + Shift+Insert,
+    /// restore old clipboard best-effort. Shift+Insert (not Ctrl+V) because
+    /// terminals treat Ctrl+V as readline quoted-insert (literal ^M).
     async fn paste_text(&self, text: &str) -> Result<CallToolResult, McpError> {
         let old = clip::get(self.session).await.ok();
-        if let Err(e) = clip::set(self.session, text).await {
+        if let Err(e) = clip::set_both(self.session, text).await {
             return fail(e, true);
         }
         let reg = match registry_of(self).await {
             Some(r) => r,
             None => return no_backend(),
         };
-        if let Err(t) = reg.input.key(vec!["ctrl+v".into()]).await {
+        if let Err(t) = reg.input.key(vec!["shift+Insert".into()]).await {
             return ok(json!({"ok": false,
                 "error": {"code": t.code, "message": t.message, "retryable": true}}));
         }

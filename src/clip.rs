@@ -64,3 +64,23 @@ pub async fn set(session: SessionType, text: &str) -> Result<(), BackendError> {
     }
     Ok(())
 }
+
+/// Set BOTH clipboard and primary selections (paste path only).
+///
+/// Rationale: terminals paste primary on Shift+Insert and treat Ctrl+V as
+/// readline quoted-insert (literal ^M); GUI apps paste clipboard on Ctrl+V
+/// and primary on Shift+Insert. Setting both then pressing Shift+Insert
+/// pastes correctly in both worlds with one chord.
+pub async fn set_both(session: SessionType, text: &str) -> Result<(), BackendError> {
+    match session {
+        SessionType::Wayland => {
+            run("wl-copy", &[], Some(text.as_bytes().to_vec())).await?;
+            run("wl-copy", &["--primary"], Some(text.as_bytes().to_vec())).await?;
+        }
+        SessionType::X11 => {
+            run("xclip", &["-i", "-sel", "clip"], Some(text.as_bytes().to_vec())).await?;
+            run("xclip", &["-i", "-sel", "primary"], Some(text.as_bytes().to_vec())).await?;
+        }
+    }
+    Ok(())
+}

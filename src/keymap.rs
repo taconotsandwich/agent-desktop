@@ -148,16 +148,18 @@ pub fn keycode_for_named_key(name: &str) -> Option<u32> {
 /// holds Shift when [`shift_required`] is true.
 pub fn keycode_for_char(ch: char) -> Option<u32> {
     Some(match ch {
-        '1' => 2,
-        '2' => 3,
-        '3' => 4,
-        '4' => 5,
-        '5' => 6,
-        '6' => 7,
-        '7' => 8,
-        '8' => 9,
-        '9' => 10,
-        '0' => 11,
+        '1' | '!' => 2,
+        '2' | '@' => 3,
+        '3' | '#' => 4,
+        '4' | '$' => 5,
+        '5' | '%' => 6,
+        '6' | '^' => 7,
+        '7' | '&' => 8,
+        '8' | '*' => 9,
+        '9' | '(' => 10,
+        '0' | ')' => 11,
+        '-' | '_' => 12,
+        '=' | '+' => 13,
         'q' | 'Q' => 16,
         'w' | 'W' => 17,
         'e' | 'E' => 18,
@@ -168,6 +170,8 @@ pub fn keycode_for_char(ch: char) -> Option<u32> {
         'i' | 'I' => 23,
         'o' | 'O' => 24,
         'p' | 'P' => 25,
+        '[' | '{' => 26,
+        ']' | '}' => 27,
         'a' | 'A' => 30,
         's' | 'S' => 31,
         'd' | 'D' => 32,
@@ -177,6 +181,9 @@ pub fn keycode_for_char(ch: char) -> Option<u32> {
         'j' | 'J' => 36,
         'k' | 'K' => 37,
         'l' | 'L' => 38,
+        ';' | ':' => 39,
+        '\'' | '"' => 40,
+        '`' | '~' => 41,
         'z' | 'Z' => 44,
         'x' | 'X' => 45,
         'c' | 'C' => 46,
@@ -184,6 +191,10 @@ pub fn keycode_for_char(ch: char) -> Option<u32> {
         'b' | 'B' => 48,
         'n' | 'N' => 49,
         'm' | 'M' => 50,
+        ',' | '<' => 51,
+        '.' | '>' => 52,
+        '/' | '?' => 53,
+        '\\' | '|' => 43,
         ' ' => KEY_SPACE,
         '\n' => KEY_ENTER,
         '\t' => KEY_TAB,
@@ -191,8 +202,9 @@ pub fn keycode_for_char(ch: char) -> Option<u32> {
     })
 }
 
+/// True when the character needs Shift held on a US keymap.
 pub fn shift_required(ch: char) -> bool {
-    ch.is_ascii_uppercase()
+    ch.is_ascii_uppercase() || matches!(ch, "!@#$%^&*()_+{}|:\"<>?~")
 }
 
 pub fn parse_button(name: &str) -> Result<u32, BackendError> {
@@ -206,4 +218,34 @@ pub fn parse_button(name: &str) -> Result<u32, BackendError> {
             });
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn punctuation_maps_with_shift_flags() {
+        for ch in "-_.:/?=+,@#%".chars() {
+            assert!(keycode_for_char(ch).is_some(), "no mapping for {ch:?}");
+        }
+        assert!(shift_required('A'));
+        assert!(shift_required('!'));
+        assert!(shift_required('_'));
+        assert!(!shift_required('a'));
+        assert!(!shift_required('-'));
+        assert!(!shift_required('5'));
+        // shifted digit shares the digit keycode
+        assert_eq!(keycode_for_char('!'), keycode_for_char('1'));
+        assert_eq!(keycode_for_char('_'), keycode_for_char('-'));
+    }
+
+    #[test]
+    fn chords_parse() {
+        let c = parse_chord("shift+Insert").unwrap();
+        assert_eq!(c.modifiers, vec![Modifier::Shift]);
+        assert_eq!(c.key, KEY_INSERT);
+        let c = parse_chord("ctrl+s").unwrap();
+        assert_eq!(c.modifiers, vec![Modifier::Ctrl]);
+    }
 }
