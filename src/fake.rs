@@ -19,6 +19,7 @@ pub struct FakeShot;
 pub struct FakeInput;
 pub struct FakeWindows;
 
+#[async_trait::async_trait]
 impl ShotDriver for FakeShot {
     fn id(&self) -> &'static str {
         "fake-shot"
@@ -40,6 +41,7 @@ impl ShotDriver for FakeShot {
     }
 }
 
+#[async_trait::async_trait]
 impl InputDriver for FakeInput {
     fn id(&self) -> &'static str {
         "fake-input"
@@ -77,6 +79,7 @@ impl InputDriver for FakeInput {
     }
 }
 
+#[async_trait::async_trait]
 impl WindowDriver for FakeWindows {
     fn id(&self) -> &'static str {
         "fake-windows"

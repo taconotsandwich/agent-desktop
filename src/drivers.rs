@@ -7,7 +7,7 @@
 //! A11y (AT-SPI2) and clipboard (wl-* vs xclip) are shared helpers, one impl
 //! each, selected by session type — not per-compositor code.
 
-use crate::types::{Bbox, Button, Ref, ToolError};
+pub use crate::types::{Bbox, Button, Ref, ToolError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +32,7 @@ pub struct Probe {
 
 /// Pixels. Native desktop coordinates; engine downscales previews and maps
 /// model coords back before dispatch (Anthropic sweet spot ≤1568 long edge).
+#[async_trait::async_trait]
 pub trait ShotDriver: Send + Sync {
     fn id(&self) -> &'static str;
     async fn probe(&self) -> Probe;
@@ -66,6 +67,7 @@ pub enum ShotFormat {
 
 /// Pointer + keyboard as one driver: on Wayland both come from the same
 /// token (EIS fd / portal session); splitting them invites half-sessions.
+#[async_trait::async_trait]
 pub trait InputDriver: Send + Sync {
     fn id(&self) -> &'static str;
     async fn probe(&self) -> Probe;
@@ -79,6 +81,7 @@ pub trait InputDriver: Send + Sync {
     async fn key(&self, keys: Vec<String>) -> Result<(), ToolError>;
 }
 
+#[async_trait::async_trait]
 pub trait WindowDriver: Send + Sync {
     fn id(&self) -> &'static str;
     async fn probe(&self) -> Probe;
