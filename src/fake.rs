@@ -53,7 +53,13 @@ impl InputDriver for FakeInput {
             detail: "fake always ok".into(),
         }
     }
-    async fn click(&self, _x: i32, _y: i32, _b: Button) -> Result<(), ToolError> {
+    async fn click(
+        &self,
+        _x: i32,
+        _y: i32,
+        _b: Button,
+        _hold: Vec<crate::keymap::Modifier>,
+    ) -> Result<(), ToolError> {
         Ok(())
     }
     async fn move_to(&self, _x: i32, _y: i32) -> Result<(), ToolError> {

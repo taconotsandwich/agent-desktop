@@ -5,10 +5,17 @@
 //! Handlers are thin: validate refs → dispatch to registry drivers → return
 //! structured JSON. No compositor code here. Approvals/policy deferred.
 
+use crate::a11y::{self, AtspiConnection, WalkOpts};
+use crate::backends::kwin_windows::run_script;
+use crate::clip;
 use crate::core::RefStore;
-use crate::drivers::Button;
+use crate::drivers::{Button, SessionType, ShotTarget, WindowInfo};
+use crate::error::BackendError;
+use crate::keymap::Modifier;
 use crate::registry::Registry;
 use crate::types::{Diff, Ref};
+use atspi::proxy::accessible::{AccessibleProxy, ObjectRefExt};
+use base64::Engine as _;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -19,19 +26,31 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AgentDesktop {
     pub refs: Arc<RefStore>,
     pub registry: Arc<tokio::sync::RwLock<Option<Registry>>>,
+    pub bus: zbus::Connection,
+    pub atspi: Arc<AtspiConnection>,
+    pub session: SessionType,
     pub tool_router: ToolRouter<AgentDesktop>,
 }
 
 impl AgentDesktop {
-    pub fn new(refs: Arc<RefStore>) -> Self {
+    pub fn new(
+        refs: Arc<RefStore>,
+        bus: zbus::Connection,
+        atspi: Arc<AtspiConnection>,
+        session: SessionType,
+    ) -> Self {
         Self {
             refs,
             registry: Arc::new(tokio::sync::RwLock::new(None)),
+            bus,
+            atspi,
+            session,
             tool_router: Self::tool_router(),
         }
     }
@@ -42,8 +61,26 @@ fn ok(v: serde_json::Value) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![content]))
 }
 
-fn not_yet(what: &'static str) -> Result<CallToolResult, McpError> {
-    ok(json!({"ok": false, "error": {"code": "not_implemented", "message": what, "retryable": false}}))
+fn stale(what: &str) -> Result<CallToolResult, McpError> {
+    ok(json!({"ok": false,
+        "error": {"code": "stale_handle", "message": format!("{what}; re-observe"), "retryable": false},
+        "diff": Diff::default()}))
+}
+
+fn fail(e: BackendError, retryable: bool) -> Result<CallToolResult, McpError> {
+    let t = e.tool(retryable);
+    ok(json!({"ok": false,
+        "error": {"code": t.code, "message": t.message, "retryable": t.retryable},
+        "diff": Diff::default()}))
+}
+
+/// Clone the probed registry or answer `no_backend`.
+async fn registry_of(slf: &AgentDesktop) -> Result<Registry, Result<CallToolResult, McpError>> {
+    match slf.registry.read().await.as_ref() {
+        Some(r) => Ok(r.clone()),
+        None => Err(ok(json!({"ok": false,
+            "error": {"code": "no_backend", "message": "no compositor probed yet", "retryable": false}}))),
+    }
 }
 
 // ---- Observation (read-only) ----
@@ -62,14 +99,13 @@ pub struct InspectArgs {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ScreenshotArgs {
-    /// full | window:<ref> | element:<ref>
+    /// full | window:<ref>
     pub region: Option<String>,
     pub max_long_edge: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ReadTextArgs {
-    /// window:<ref> | element:<ref> | full
     pub target: Option<String>,
 }
 
@@ -100,6 +136,8 @@ pub struct MouseArgs {
     pub path: Option<Vec<(i32, i32)>>,
     pub dx: Option<i32>,
     pub dy: Option<i32>,
+    pub hold: Option<Vec<String>>,
+    pub count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -117,7 +155,7 @@ pub struct WindowControlArgs {
     pub window_ref: Ref,
     /// focus | minimize | maximize | restore | close | move | resize
     pub action: String,
-    pub geometry: Option<crate::drivers::Bbox>,
+    pub geometry: Option<[i32; 4]>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -127,6 +165,10 @@ pub struct ClipboardSetArgs {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DoctorArgs {}
+
+async fn query_windows(reg: &Registry) -> Result<Vec<WindowInfo>, BackendError> {
+    reg.windows.query().await.map_err(|t| BackendError::Failed(t.message))
+}
 
 #[tool_router]
 impl AgentDesktop {
@@ -140,7 +182,24 @@ impl AgentDesktop {
         &self,
         Parameters(_args): Parameters<ObserveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("observe lands with the AT-SPI helper")
+        let reg = registry_of(self).await?;
+        let wins = match query_windows(&reg).await {
+            Ok(w) => w,
+            Err(e) => return fail(e, true),
+        };
+        let ids: Vec<String> = wins.iter().map(|w| w.window_ref.0.clone()).collect();
+        let minted = self.refs.mint_windows(ids).await;
+        let windows: Vec<_> = wins
+            .iter()
+            .zip(minted)
+            .map(|(w, r)| {
+                json!({"ref": r.0,
+                    "title": {"trust": "external", "text": &w.title},
+                    "class": {"trust": "trusted", "text": &w.class},
+                    "active": w.is_active})
+            })
+            .collect();
+        ok(json!({"ok": true, "count": windows.len(), "windows": windows}))
     }
 
     #[tool(
@@ -152,9 +211,35 @@ impl AgentDesktop {
         Parameters(args): Parameters<InspectArgs>,
     ) -> Result<CallToolResult, McpError> {
         if !self.refs.check(&args.target).await {
-            return ok(json!({"ok": false, "error": {"code": "stale_handle", "message": "ref expired; re-observe", "retryable": false}, "diff": Diff::default()}));
+            return stale("ref expired");
         }
-        not_yet("inspect lands with the AT-SPI helper")
+        let conn = match self.atspi.get().await {
+            Ok(c) => c,
+            Err(e) => return fail(e, true),
+        };
+        let root = if self.refs.is_window(&args.target).await {
+            match self.window_root(conn, &args.target).await {
+                Ok(r) => r,
+                Err(e) => return fail(e, true),
+            }
+        } else {
+            match self.element_proxy(conn, &args.target).await {
+                Ok(r) => r,
+                Err(e) => return fail(e, false),
+            }
+        };
+        let opts = WalkOpts {
+            max_depth: args.max_depth.unwrap_or(3),
+            max_elements: 200,
+            role_filter: None,
+            name_contains: None,
+        };
+        match a11y::walk(conn, root, self.refs.clone(), opts).await {
+            Ok((elements, truncated, warnings)) => {
+                ok(json!({"ok": true, "elements": elements, "truncated": truncated, "warnings": warnings}))
+            }
+            Err(e) => fail(e, true),
+        }
     }
 
     #[tool(
@@ -163,9 +248,29 @@ impl AgentDesktop {
     )]
     async fn screenshot(
         &self,
-        Parameters(_args): Parameters<ScreenshotArgs>,
+        Parameters(args): Parameters<ScreenshotArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("screenshot lands with the shot drivers")
+        let reg = registry_of(self).await?;
+        let edge = args.max_long_edge.unwrap_or(1280).clamp(256, 1568);
+        let region = args.region.unwrap_or_else(|| "full".into());
+        if region != "full" {
+            return ok(json!({"ok": false,
+                "error": {"code": "unsupported", "message": "window/element-targeted capture lands with frameGeometry crop; use full for now", "retryable": false}}));
+        }
+        let shot = match reg.shot.capture(ShotTarget::Full, edge).await {
+            Ok(s) => s,
+            Err(t) => {
+                return ok(json!({"ok": false,
+                    "error": {"code": t.code, "message": t.message, "retryable": true}}));
+            }
+        };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&shot.bytes);
+        Ok(CallToolResult::success(vec![
+            Content::image(b64, "image/png"),
+            Content::text(
+                json!({"coord_width": shot.coord_w, "coord_height": shot.coord_h}).to_string(),
+            ),
+        ]))
     }
 
     #[tool(
@@ -176,7 +281,8 @@ impl AgentDesktop {
         &self,
         Parameters(_args): Parameters<ReadTextArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("read_text lands with the OCR helper")
+        ok(json!({"ok": false,
+            "error": {"code": "not_implemented", "message": "read_text lands with the tesseract helper", "retryable": false}}))
     }
 
     #[tool(
@@ -185,9 +291,28 @@ impl AgentDesktop {
     )]
     async fn window_query(
         &self,
-        Parameters(_args): Parameters<WindowQueryArgs>,
+        Parameters(args): Parameters<WindowQueryArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("window_query lands with the window drivers")
+        let reg = registry_of(self).await?;
+        let wins = match query_windows(&reg).await {
+            Ok(w) => w,
+            Err(e) => return fail(e, true),
+        };
+        let ids: Vec<String> = wins.iter().map(|w| w.window_ref.0.clone()).collect();
+        let minted = self.refs.mint_windows(ids).await;
+        let fmt = args.format.unwrap_or_else(|| "titles".into());
+        let windows: Vec<_> = wins
+            .iter()
+            .zip(minted)
+            .map(|(w, r)| match fmt.as_str() {
+                "ids" => json!({"ref": r.0}),
+                "full" => json!({"ref": r.0, "title": &w.title, "class": &w.class,
+                    "geometry": [w.geometry.x, w.geometry.y, w.geometry.w, w.geometry.h],
+                    "screen": w.screen, "active": w.is_active}),
+                _ => json!({"ref": r.0, "title": &w.title, "class": &w.class, "active": w.is_active}),
+            })
+            .collect();
+        ok(json!({"ok": true, "windows": windows}))
     }
 
     #[tool(description = "Read the clipboard.", annotations(read_only_hint = true))]
@@ -195,7 +320,11 @@ impl AgentDesktop {
         &self,
         Parameters(_args): Parameters<ClipboardReadArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("clipboard_read lands with the clipboard helpers")
+        match clip::get(self.session).await {
+            Ok(text) => ok(json!({"ok": true,
+                "text": {"trust": "external", "text": text}})),
+            Err(e) => fail(e, true),
+        }
     }
 
     // ---- Action (destructive) ----
@@ -209,9 +338,68 @@ impl AgentDesktop {
         Parameters(args): Parameters<ActOnElementArgs>,
     ) -> Result<CallToolResult, McpError> {
         if !self.refs.check(&args.element_ref).await {
-            return ok(json!({"ok": false, "error": {"code": "stale_handle", "message": "ref expired; re-observe", "retryable": false}, "diff": Diff::default()}));
+            return stale("ref expired");
         }
-        not_yet("act_on_element lands with AT-SPI + input drivers")
+        if self.refs.is_window(&args.element_ref).await {
+            return ok(json!({"ok": false,
+                "error": {"code": "unsupported", "message": "ref is a window, not an element", "retryable": false}}));
+        }
+        let conn = match self.atspi.get().await {
+            Ok(c) => c,
+            Err(e) => return fail(e, true),
+        };
+        let proxy = match self.element_proxy(conn, &args.element_ref).await {
+            Ok(p) => p,
+            Err(e) => return fail(e, false),
+        };
+        let proxies = match proxy.proxies().await {
+            Ok(p) => p,
+            Err(e) => {
+                return fail(
+                    BackendError::BusDisconnected {
+                        detail: e.to_string(),
+                    },
+                    true,
+                );
+            }
+        };
+        let action_proxy = match proxies.action().await {
+            Ok(a) => a,
+            Err(_) => {
+                return ok(json!({"ok": false,
+                    "error": {"code": "not_actionable", "message": "element has no Action interface; try mouse on bbox", "retryable": false}}));
+            }
+        };
+        let actions = match action_proxy.get_actions().await {
+            Ok(a) => a,
+            Err(e) => {
+                return fail(
+                    BackendError::BusDisconnected {
+                        detail: e.to_string(),
+                    },
+                    true,
+                );
+            }
+        };
+        let requested = args.action.to_ascii_lowercase();
+        let idx = match actions
+            .iter()
+            .position(|a| a.name.eq_ignore_ascii_case(&requested))
+        {
+            Some(i) => i as i32,
+            None => {
+                return ok(json!({"ok": false,
+                    "error": {"code": "not_actionable",
+                        "message": format!("no action {requested:?}; available: {:?}",
+                            actions.iter().map(|a| &a.name).collect::<Vec<_>>()),
+                        "retryable": false}}));
+            }
+        };
+        match action_proxy.do_action(idx).await {
+            Ok(true) => ok(json!({"ok": true, "action_invoked": actions[idx as usize].name})),
+            _ => ok(json!({"ok": false,
+                "error": {"code": "not_actionable", "message": "AT-SPI do_action returned false", "retryable": true}})),
+        }
     }
 
     #[tool(
@@ -220,9 +408,108 @@ impl AgentDesktop {
     )]
     async fn mouse(
         &self,
-        Parameters(_args): Parameters<MouseArgs>,
+        Parameters(args): Parameters<MouseArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("mouse lands with the input drivers")
+        let reg = registry_of(self).await?;
+        let op = args.op.to_ascii_lowercase();
+        let button = args.button.unwrap_or(Button::Left);
+        let hold: Vec<Modifier> = match args.hold.unwrap_or_default() {
+            hs => {
+                let mut out = Vec::with_capacity(hs.len());
+                for h in hs {
+                    match Modifier::parse(&h) {
+                        Ok(m) => out.push(m),
+                        Err(e) => return fail(e, false),
+                    }
+                }
+                out
+            }
+        };
+        let res: Result<(), BackendError> = match op.as_str() {
+            "click" => {
+                let (x, y) = match (args.x, args.y) {
+                    (Some(x), Some(y)) => (x, y),
+                    _ => {
+                        return fail(
+                            BackendError::Unsupported {
+                                reason: "coordinate required for click".into(),
+                            },
+                            false,
+                        );
+                    }
+                };
+                let count = args.count.unwrap_or(1).max(1).min(3);
+                let mut r = Ok(());
+                for _ in 0..count {
+                    r = reg
+                        .input
+                        .click(x, y, button, hold.clone())
+                        .await
+                        .map_err(|t| BackendError::Failed(t.message));
+                    if r.is_err() {
+                        break;
+                    }
+                }
+                r
+            }
+            "move" => match (args.x, args.y) {
+                (Some(x), Some(y)) => reg
+                    .input
+                    .move_to(x, y)
+                    .await
+                    .map_err(|t| BackendError::Failed(t.message)),
+                _ => Err(BackendError::Unsupported {
+                    reason: "coordinate required for move".into(),
+                }),
+            },
+            "drag" => {
+                let mut pts: Vec<(i32, i32)> = Vec::new();
+                if let (Some(x), Some(y)) = (args.x, args.y) {
+                    if let Some(mut path) = args.path {
+                        path.insert(0, (x, y));
+                        pts = path;
+                    }
+                } else if let Some(path) = args.path {
+                    pts = path;
+                }
+                if pts.len() < 2 {
+                    return fail(
+                        BackendError::Unsupported {
+                            reason: "drag needs start + end (x/y plus path, or path with ≥2 points)".into(),
+                        },
+                        false,
+                    );
+                }
+                reg.input
+                    .drag(pts, button)
+                    .await
+                    .map_err(|t| BackendError::Failed(t.message))
+            }
+            "scroll" => {
+                let (x, y) = match (args.x, args.y) {
+                    (Some(x), Some(y)) => (x, y),
+                    _ => {
+                        return fail(
+                            BackendError::Unsupported {
+                                reason: "coordinate required for scroll".into(),
+                            },
+                            false,
+                        );
+                    }
+                };
+                reg.input
+                    .scroll(x, y, args.dx.unwrap_or(0), args.dy.unwrap_or(3))
+                    .await
+                    .map_err(|t| BackendError::Failed(t.message))
+            }
+            other => Err(BackendError::Unsupported {
+                reason: format!("unsupported mouse op: {other}"),
+            }),
+        };
+        match res {
+            Ok(()) => ok(json!({"ok": true, "diff": {"vision_fallback": true}})),
+            Err(e) => fail(e, true),
+        }
     }
 
     #[tool(
@@ -232,9 +519,32 @@ impl AgentDesktop {
     )]
     async fn keyboard_type(
         &self,
-        Parameters(_args): Parameters<TypeArgs>,
+        Parameters(args): Parameters<TypeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("keyboard.type lands with the input drivers")
+        if args.text.is_empty() {
+            return fail(
+                BackendError::Unsupported {
+                    reason: "empty text".into(),
+                },
+                false,
+            );
+        }
+        // Non-ASCII → clipboard paste path (evdev is US-QWERTY ASCII only).
+        if !args.text.is_ascii() {
+            return self.paste_text(&args.text).await;
+        }
+        let reg = registry_of(self).await?;
+        match reg.input.type_text(args.text).await {
+            Ok(()) => ok(json!({"ok": true})),
+            Err(t) => {
+                if t.code == "unsupported" {
+                    // Unmappable ASCII punctuation → paste path.
+                    return self.paste_text(&t.message).await;
+                }
+                ok(json!({"ok": false,
+                    "error": {"code": t.code, "message": t.message, "retryable": true}}))
+            }
+        }
     }
 
     #[tool(
@@ -244,9 +554,22 @@ impl AgentDesktop {
     )]
     async fn keyboard_key(
         &self,
-        Parameters(_args): Parameters<KeyArgs>,
+        Parameters(args): Parameters<KeyArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("keyboard.key lands with the input drivers")
+        if args.keys.is_empty() {
+            return fail(
+                BackendError::Unsupported {
+                    reason: "empty chord".into(),
+                },
+                false,
+            );
+        }
+        let reg = registry_of(self).await?;
+        match reg.input.key(args.keys).await {
+            Ok(()) => ok(json!({"ok": true})),
+            Err(t) => ok(json!({"ok": false,
+                "error": {"code": t.code, "message": t.message, "retryable": false}})),
+        }
     }
 
     #[tool(
@@ -258,17 +581,58 @@ impl AgentDesktop {
         Parameters(args): Parameters<WindowControlArgs>,
     ) -> Result<CallToolResult, McpError> {
         if !self.refs.check(&args.window_ref).await {
-            return ok(json!({"ok": false, "error": {"code": "stale_handle", "message": "ref expired; re-query", "retryable": false}, "diff": Diff::default()}));
+            return stale("ref expired");
         }
-        not_yet("window_control lands with the window drivers")
+        let reg = registry_of(self).await?;
+        let action = args.action.to_ascii_lowercase();
+        let geo = args.geometry.map(|g| crate::drivers::Bbox {
+            x: g[0],
+            y: g[1],
+            w: g[2].max(0) as u32,
+            h: g[3].max(0) as u32,
+        });
+        let res = match action.as_str() {
+            "focus" => reg.windows.focus(&args.window_ref).await,
+            "minimize" => reg.windows.minimize(&args.window_ref).await,
+            "maximize" => reg.windows.maximize(&args.window_ref).await,
+            "restore" => reg.windows.restore(&args.window_ref).await,
+            "close" => reg.windows.close(&args.window_ref).await,
+            "move" | "resize" => match geo {
+                Some(g) => reg.windows.move_resize(&args.window_ref, g).await,
+                None => {
+                    return fail(
+                        BackendError::Unsupported {
+                            reason: format!("geometry [x,y,w,h] required for {action}"),
+                        },
+                        false,
+                    );
+                }
+            },
+            other => {
+                return fail(
+                    BackendError::Unsupported {
+                        reason: format!("unknown window action: {other}"),
+                    },
+                    false,
+                );
+            }
+        };
+        match res {
+            Ok(()) => ok(json!({"ok": true})),
+            Err(t) => ok(json!({"ok": false,
+                "error": {"code": t.code, "message": t.message, "retryable": true}})),
+        }
     }
 
     #[tool(description = "Set the clipboard contents.", annotations(destructive_hint = true))]
     async fn clipboard_set(
         &self,
-        Parameters(_args): Parameters<ClipboardSetArgs>,
+        Parameters(args): Parameters<ClipboardSetArgs>,
     ) -> Result<CallToolResult, McpError> {
-        not_yet("clipboard_set lands with the clipboard helpers")
+        match clip::set(self.session, &args.text).await {
+            Ok(()) => ok(json!({"ok": true})),
+            Err(e) => fail(e, true),
+        }
     }
 
     #[tool(
@@ -283,6 +647,7 @@ impl AgentDesktop {
         match guard.as_ref() {
             Some(r) => ok(json!({
                 "ok": true,
+                "session": format!("{:?}", self.session),
                 "shot": r.shot.id(),
                 "input": r.input.id(),
                 "windows": r.windows.id(),
@@ -291,6 +656,133 @@ impl AgentDesktop {
             None => ok(json!({"ok": false, "error": {"code": "no_backend", "message": "no compositor probed yet", "retryable": false}})),
         }
     }
+}
+
+impl AgentDesktop {
+    /// Unicode / unmappable-text path: clipboard set + Ctrl+V, restore old
+    /// clipboard best-effort. Bypasses keymap limits entirely.
+    async fn paste_text(&self, text: &str) -> Result<CallToolResult, McpError> {
+        let old = clip::get(self.session).await.ok();
+        if let Err(e) = clip::set(self.session, text).await {
+            return fail(e, true);
+        }
+        let reg = registry_of(self).await?;
+        if let Err(t) = reg.input.key(vec!["ctrl+v".into()]).await {
+            return ok(json!({"ok": false,
+                "error": {"code": t.code, "message": t.message, "retryable": true}}));
+        }
+        if let Some(prev) = old {
+            let _ = clip::set(self.session, &prev).await;
+        }
+        ok(json!({"ok": true, "via": "clipboard_paste"}))
+    }
+
+    async fn element_proxy<'a>(
+        &self,
+        conn: &'a atspi::AccessibilityConnection,
+        r: &Ref,
+    ) -> Result<AccessibleProxy<'a>, BackendError> {
+        // Walk() mints refs whose .0 IS the base64 bus|path payload. Window
+        // refs (kwin:<uuid>) never reach here — callers check first.
+        let (bus, path) = a11y::decode_element_ref(&r.0)
+            .ok_or_else(|| BackendError::StaleHandle(format!("bad ref {}", r.0)))?;
+        let bus_name = zbus::names::BusName::try_from(bus)
+            .map_err(|e| BackendError::StaleHandle(format!("bad bus name: {e}")))?;
+        let obj_path = zbus::zvariant::ObjectPath::try_from(path)
+            .map_err(|e| BackendError::StaleHandle(format!("bad path: {e}")))?;
+        AccessibleProxy::builder(conn.connection())
+            .destination(bus_name)
+            .map_err(|e| BackendError::BusDisconnected {
+                detail: e.to_string(),
+            })?
+            .path(obj_path)
+            .map_err(|e| BackendError::BusDisconnected {
+                detail: e.to_string(),
+            })?
+            .cache_properties(atspi::zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .map_err(|e| BackendError::BusDisconnected {
+                detail: e.to_string(),
+            })
+    }
+
+    fn _element_payload(&self, _r: &Ref) -> Result<String, BackendError> {
+        // Walk() mints refs whose .0 IS the base64 payload. Window refs are
+        // kwin:<uuid> and never reach here (checked by callers).
+        Ok(r.0.clone())
+    }
+
+    /// Window ref → owning app's AT-SPI root via pid match.
+    async fn window_root<'a>(
+        &self,
+        conn: &'a atspi::AccessibilityConnection,
+        r: &Ref,
+    ) -> Result<AccessibleProxy<'a>, BackendError> {
+        // Fresh query to map ref → kwin uuid → pid via a second script call.
+        let reg = registry_of(self).await.map_err(|_| BackendError::Unavailable {
+            backend: "windows",
+            detail: "no compositor probed yet".into(),
+        })?;
+        let wins = query_windows(&reg).await?;
+        let _ = wins;
+        // pid lookup: KWin internalId → pid through a targeted script.
+        let uuid = r
+            .0
+            .strip_prefix("kwin:")
+            .ok_or_else(|| BackendError::StaleHandle(format!("not a kwin ref: {}", r.0)))?;
+        let uuid = uuid.replace('\\', "\\\\").replace('\'', "\\'");
+        let body = format!(
+            "var ws = workspace; var list = ws.windowList(); \
+             for (var i=0;i<list.length;i++) {{ \
+               if (list[i].internalId && list[i].internalId.toString() === '{uuid}') \
+                 {{ return {{ pid: list[i].pid || 0 }}; }} }} \
+             return {{ pid: 0 }};"
+        );
+        let payload = run_script(&self.bus, &body, Duration::from_secs(5))
+            .await?;
+        let pid: i64 = serde_json::from_str::<serde_json::Value>(&payload)
+            .ok()
+            .and_then(|v| v.get("pid")?.as_i64())
+            .unwrap_or(0);
+        if pid <= 0 {
+            return Err(BackendError::Failed("window has no pid; cannot map to AT-SPI app".into()));
+        }
+        // Walk registry children for the app whose bus owner pid matches.
+        let root = conn.root_accessible_on_registry().await.map_err(|e| {
+            BackendError::BusDisconnected {
+                detail: format!("registry root: {e}"),
+            }
+        })?;
+        let count = root.child_count().await.unwrap_or(0);
+        for i in 0..count {
+            let child_ref = match root.get_child_at_index(i).await {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let app_proxy = match child_ref.into_accessible_proxy(conn.connection()).await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let bus_name = app_proxy.inner().destination().to_string();
+            if bus_owner_pid(conn.connection(), &bus_name).await == Some(pid) {
+                return Ok(app_proxy);
+            }
+        }
+        Err(BackendError::Failed(format!(
+            "no AT-SPI application with pid {pid}; app may not be a11y-enabled"
+        )))
+    }
+}
+
+async fn bus_owner_pid(conn: &zbus::Connection, bus_name: &str) -> Option<i64> {
+    let proxy = zbus::fdo::DBusProxy::new(conn).await.ok()?;
+    let name = zbus::names::BusName::try_from(bus_name.to_string()).ok()?;
+    proxy
+        .get_connection_unix_process_id(name)
+        .await
+        .ok()
+        .map(|p| p as i64)
 }
 
 #[tool_handler]

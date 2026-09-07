@@ -1,7 +1,11 @@
+pub mod a11y;
+pub mod backends;
+pub mod clip;
 pub mod core;
 pub mod drivers;
 pub mod error;
 pub mod fake;
+pub mod keymap;
 pub mod registry;
 pub mod server;
 pub mod types;

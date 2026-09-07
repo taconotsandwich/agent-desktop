@@ -15,6 +15,18 @@ pub enum BackendError {
     StaleHandle(String),
     #[error("action failed: {0}")]
     Failed(String),
+    #[error("bus disconnected: {detail}")]
+    BusDisconnected { detail: String },
+    #[error("i/o error on {path}: {error}")]
+    Io { path: String, error: String },
+    #[error("external command failed: {stderr}")]
+    ExternalCommandFailed { stderr: String },
+    #[error("input dispatch failed: {detail}")]
+    InputDispatchFailed { detail: String },
+    #[error("timeout: {detail}")]
+    Timeout { detail: String },
+    #[error("unsupported: {reason}")]
+    Unsupported { reason: String },
 }
 
 impl BackendError {
@@ -26,6 +38,12 @@ impl BackendError {
             }
             Self::StaleHandle(msg) => ("stale_handle", msg.clone()),
             Self::Failed(msg) => ("action_failed", msg.clone()),
+            Self::BusDisconnected { detail } => ("bus_disconnected", detail.clone()),
+            Self::Io { path, error } => ("io", format!("{path}: {error}")),
+            Self::ExternalCommandFailed { stderr } => ("external_command_failed", stderr.clone()),
+            Self::InputDispatchFailed { detail } => ("input_dispatch_failed", detail.clone()),
+            Self::Timeout { detail } => ("timeout", detail.clone()),
+            Self::Unsupported { reason } => ("unsupported", reason.clone()),
         };
         ToolError {
             code: code.into(),

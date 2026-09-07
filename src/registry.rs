@@ -13,6 +13,7 @@
 use crate::drivers::{InputDriver, Probe, ShotDriver, WindowDriver};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Registry {
     pub shot: Arc<dyn ShotDriver>,
     pub input: Arc<dyn InputDriver>,
