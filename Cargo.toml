@@ -1,0 +1,41 @@
+[package]
+name = "agent-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "General Linux desktop-control MCP server: KDE + GNOME, Wayland + X11"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "agent-desktop"
+path = "src/main.rs"
+
+[lib]
+name = "agent_desktop"
+path = "src/lib.rs"
+
+[dependencies]
+rmcp           = { version = "1.7", features = ["server", "macros", "transport-io"] }
+tokio          = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "io-std", "fs", "process"] }
+zbus           = { version = "5.15", default-features = false, features = ["tokio"] }
+zvariant       = "5.7"
+clap           = { version = "4.6", features = ["derive"] }
+thiserror      = "2.0"
+anyhow         = "1.0"
+serde          = { version = "1.0", features = ["derive"] }
+serde_json     = "1.0"
+schemars       = "1.0"
+tracing        = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono         = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+uuid           = { version = "1.10", features = ["v4", "serde"] }
+base64         = "0.22"
+
+# Phase-gated (uncomment as drivers land):
+# atspi = { version = "=0.30", features = ["tokio"] }
+# reis  = { version = "=0.6.1", features = ["tokio"] }
+# image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "time"] }
