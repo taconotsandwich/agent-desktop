@@ -12,7 +12,24 @@ UNIT_DIR="$HOME/.config/systemd/user"
 
 cargo build --release --manifest-path "$REPO/Cargo.toml"
 install -Dm755 "$BIN_SRC" "$PREFIX/bin/agent-desktop"
-install -Dm644 "$DESKTOP_SRC" "$APP_DIR/agent-desktop.desktop"
+BIN="$PREFIX/bin/agent-desktop"
+# KWin matches QFileInfo(first-word-of-Exec).canonicalFilePath() against
+# /proc/pid/exe, so Exec/TryExec MUST be absolute (bare names never match).
+cat > "$APP_DIR/agent-desktop.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Agent Desktop MCP Server
+GenericName=Desktop Automation Server
+Comment=General Linux desktop-control MCP server (KDE + GNOME, Wayland + X11)
+Icon=preferences-desktop
+TryExec=$BIN
+Exec=$BIN
+NoDisplay=true
+Categories=Utility;Accessibility;
+
+# Authorize this binary to call the org.kde.KWin.ScreenShot2 D-Bus interface.
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
+EOF
 command -v update-desktop-database >/dev/null 2>&1 \
   && update-desktop-database "$APP_DIR/" >/dev/null 2>&1 || true
 command -v kbuildsycoca6 >/dev/null 2>&1 \
