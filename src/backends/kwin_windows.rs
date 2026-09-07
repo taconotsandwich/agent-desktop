@@ -115,6 +115,12 @@ impl WindowDriver for KwinWindows {
             .and_then(|w| w.as_array())
             .cloned()
             .unwrap_or_default();
+        eprintln!(
+            "KWIN_DIAG count={} stacking={} active={:?}",
+            root.get("count").and_then(|v| v.as_u64()).unwrap_or(999),
+            root.get("stacking").and_then(|v| v.as_u64()).unwrap_or(999),
+            root.get("activeCaption").and_then(|v| v.as_str()).unwrap_or("?"),
+        );
         Ok(items
             .into_iter()
             .filter_map(|v| {
