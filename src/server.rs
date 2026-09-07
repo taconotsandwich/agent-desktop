@@ -740,7 +740,7 @@ impl AgentDesktop {
         r: &Ref,
     ) -> Result<AccessibleProxy<'a>, BackendError> {
         // Fresh query to map ref → kwin uuid → pid via a second script call.
-        let reg = registry_of(self).await.map_err(|_| BackendError::Unavailable {
+        let reg = registry_of(self).await.ok_or(BackendError::Unavailable {
             backend: "windows",
             detail: "no compositor probed yet".into(),
         })?;
