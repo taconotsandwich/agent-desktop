@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Agent Desktop MCP Server
+GenericName=Desktop Automation Server
+Comment=General Linux desktop-control MCP server (KDE + GNOME, Wayland + X11)
+Icon=preferences-desktop
+TryExec=agent-desktop
+Exec=agent-desktop
+NoDisplay=true
+Categories=Utility;Accessibility;
+
+# Authorize this binary to call the org.kde.KWin.ScreenShot2 D-Bus interface.
+# KWin's KApplicationTrader check looks up the binary's .desktop file and
+# refuses screenshot calls if this list is missing.
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
