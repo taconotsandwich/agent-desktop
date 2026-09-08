@@ -132,15 +132,30 @@ impl VirtualSeat {
     }
 
     pub fn shutdown(self) {
-        for pid in &self.pids {
+        Self::kill_all(&self.pids);
+    }
+
+    fn kill_all(pids: &[i32]) {
+        for pid in pids {
             unsafe {
                 libc::kill(*pid, libc::SIGTERM);
             }
         }
         std::thread::sleep(Duration::from_secs(2));
-        for pid in &self.pids {
+        for pid in pids {
             unsafe {
                 libc::kill(*pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+impl Drop for VirtualSeat {
+    fn drop(&mut self) {
+        // Best-effort: no sleep here, SIGTERM only. Graceful path is shutdown().
+        for pid in &self.pids {
+            unsafe {
+                libc::kill(*pid, libc::SIGTERM);
             }
         }
     }

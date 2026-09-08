@@ -110,6 +110,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    server.serve(stdio()).await?.waiting().await?;
+    let result = server.serve(stdio()).await?.waiting().await;
+    // Normal exit (stdin EOF): take the virtual seat down with us so e2e
+    // runs and restarts never leak compositors. Drop also SIGTERMs.
+    if let Some(seat) = _virtual_seat {
+        seat.shutdown();
+    }
+    result?;
     Ok(())
 }
