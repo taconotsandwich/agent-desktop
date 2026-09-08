@@ -663,14 +663,18 @@ impl AgentDesktop {
     ) -> Result<CallToolResult, McpError> {
         let guard = self.registry.read().await;
         match guard.as_ref() {
-            Some(r) => ok(json!({
+            Some(r) => {
+                let (a11y_ok, a11y_detail) = crate::a11y::status(&self.atspi).await;
+                ok(json!({
                 "ok": true,
                 "session": format!("{:?}", self.session),
                 "shot": r.shot.id(),
                 "input": r.input.id(),
                 "windows": r.windows.id(),
+                "a11y_ok": a11y_ok,
+                "a11y": a11y_detail,
                 "probes": r.probes.iter().map(|p| json!({"id": p.id, "ok": p.ok, "detail": &p.detail})).collect::<Vec<_>>(),
-            })),
+            }))
             None => ok(json!({"ok": false, "error": {"code": "no_backend", "message": "no compositor probed yet", "retryable": false}})),
         }
     }

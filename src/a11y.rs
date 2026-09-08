@@ -52,6 +52,22 @@ pub fn decode_element_ref(payload: &str) -> Option<(String, String)> {
     Some((bus.to_string(), path.to_string()))
 }
 
+/// Doctor probe: can we open the a11y bus, and how many apps are registered?
+pub async fn status(conn: &AtspiConnection) -> (bool, String) {
+    let c = match conn.get().await {
+        Ok(c) => c,
+        Err(e) => return (false, format!("connect: {}", e.tool(false).message)),
+    };
+    let root = match c.root_accessible_on_registry().await {
+        Ok(r) => r,
+        Err(e) => return (false, format!("registry root: {e}")),
+    };
+    match root.child_count().await {
+        Ok(n) => (true, format!("registry ok, {n} applications")),
+        Err(e) => (false, format!("child_count: {e}")),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct FlatElement {
