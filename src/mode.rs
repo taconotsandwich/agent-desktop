@@ -35,7 +35,7 @@ pub struct VirtualSeat {
 }
 
 impl VirtualSeat {
-    /// Boot: dbus-launch → kwin_wayland --virtual → at-spi-bus-launcher →
+    /// Boot: dbus-launch → kwin_wayland --virtual → at-spi2-registryd →
     /// wayvnc (best-effort). Exports the new bus/display into this process's
     /// env so all drivers bind to the virtual seat, and writes an env file
     /// so out-of-process launchers (ssh, CI) can join the same seat.
@@ -100,14 +100,19 @@ impl VirtualSeat {
         pids.push(kwin);
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
+        // AT-SPI registry directly (not the bus-launcher: on a private
+        // dbus-launch bus there is no systemd user session, and the Registry
+        // .service file lives in accessibility-services/ where dbus-daemon
+        // activation cannot reach it — direct spawn owns org.a11y.Bus +
+        // org.a11y.atspi.Registry with no activation hop).
         match spawn_child(
-            "at-spi-bus-launcher",
-            &["--launch-immediately"],
+            "at-spi2-registryd",
+            &[],
             &bus_address,
             &wayland_display,
         ) {
             Ok(p) => pids.push(p),
-            Err(e) => tracing::warn!("at-spi-bus-launcher failed: {}", e.tool(false).message),
+            Err(e) => tracing::warn!("at-spi2-registryd failed: {}", e.tool(false).message),
         }
         let vnc_port = std::env::var("AGENT_DESKTOP_VNC_PORT").unwrap_or_else(|_| "5910".into());
         match spawn_child(
