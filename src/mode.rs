@@ -82,6 +82,17 @@ impl VirtualSeat {
             path: "org.a11y.Bus.service".into(),
             error: e.to_string(),
         })?;
+        // Same treatment: the stock entry lives in accessibility-services/
+        // with a --use-gnome-session flag that makes no sense on a KDE
+        // virtual seat; provide a plain Exec activation.
+        std::fs::write(
+            svc_dir.join("org.a11y.atspi.Registry.service"),
+            "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec=/usr/libexec/at-spi2-registryd\n",
+        )
+        .map_err(|e| BackendError::Io {
+            path: "org.a11y.atspi.Registry.service".into(),
+            error: e.to_string(),
+        })?;
         let overlay_dirs = format!(
             "{}:/usr/local/share:/usr/share",
             overlay.to_string_lossy()
