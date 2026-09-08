@@ -675,6 +675,7 @@ impl AgentDesktop {
                 "a11y": a11y_detail,
                 "probes": r.probes.iter().map(|p| json!({"id": p.id, "ok": p.ok, "detail": &p.detail})).collect::<Vec<_>>(),
             }))
+            }
             None => ok(json!({"ok": false, "error": {"code": "no_backend", "message": "no compositor probed yet", "retryable": false}})),
         }
     }
