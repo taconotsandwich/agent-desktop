@@ -224,35 +224,51 @@ impl InputDriver for X11Input {
             .map(|_| ())
             .map_err(|e| e.tool(true))
     }
-    async fn drag(&self, path: Vec<(i32, i32)>, button: Button) -> Result<(), ToolError> {
-        let (start, _) = path.split_first().ok_or_else(|| {
+    async fn drag(
+        &self,
+        path: Vec<(i32, i32)>,
+        button: Button,
+        dwell_ms: u64,
+        step_ms: u64,
+    ) -> Result<(), ToolError> {
+        let (start, rest) = path.split_first().ok_or_else(|| {
             BackendError::Unsupported {
                 reason: "drag needs ≥1 point".into(),
             }
             .tool(false)
         })?;
-        let end = path.last().unwrap();
         let d = display().map_err(|e| e.tool(false))?;
-        run(
-            "drag",
-            "xdotool",
-            &[
-                "mousemove",
-                &start.0.to_string(),
-                &start.1.to_string(),
-                "mousedown",
-                btn_arg(button),
-                "mousemove",
-                &end.0.to_string(),
-                &end.1.to_string(),
-                "mouseup",
-                btn_arg(button),
-            ],
-            &d,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|e| e.tool(true))
+        // One xdotool invocation: move, press, dwell (xdotool sleep takes
+        // seconds), interpolated moves, release.
+        let mut args: Vec<String> = vec![
+            "mousemove".into(),
+            start.0.to_string(),
+            start.1.to_string(),
+            "mousedown".into(),
+            btn_arg(button).into(),
+            "sleep".into(),
+            format!("{:.2}", dwell_ms as f64 / 1000.0),
+        ];
+        let mut prev = *start;
+        for &(ex, ey) in rest {
+            for i in 1..=10 {
+                let fx = prev.0 + (ex - prev.0) * i / 10;
+                let fy = prev.1 + (ey - prev.1) * i / 10;
+                args.push("mousemove".into());
+                args.push(fx.to_string());
+                args.push(fy.to_string());
+                args.push("sleep".into());
+                args.push(format!("{:.2}", step_ms as f64 / 1000.0));
+            }
+            prev = (ex, ey);
+        }
+        args.push("mouseup".into());
+        args.push(btn_arg(button).into());
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        run("drag", "xdotool", &arg_refs, &d)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.tool(true))
     }
     async fn scroll(
         &self,

@@ -105,7 +105,13 @@ impl InputDriver for PortalInput {
         s.pointer_move(x, y).await.map_err(|e| e.tool(true))
     }
 
-    async fn drag(&self, path: Vec<(i32, i32)>, button: Button) -> Result<(), ToolError> {
+    async fn drag(
+        &self,
+        path: Vec<(i32, i32)>,
+        button: Button,
+        dwell_ms: u64,
+        step_ms: u64,
+    ) -> Result<(), ToolError> {
         let (start, rest) = path.split_first().ok_or_else(|| {
             BackendError::Unsupported {
                 reason: "drag needs ≥1 point".into(),
@@ -113,7 +119,7 @@ impl InputDriver for PortalInput {
             .tool(false)
         })?;
         let s = self.open_pointer().await.map_err(|e| e.tool(true))?;
-        s.drag(start, rest, button_code(button))
+        s.drag(start, rest, button_code(button), dwell_ms, step_ms)
             .await
             .map_err(|e| e.tool(true))
     }

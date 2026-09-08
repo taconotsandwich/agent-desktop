@@ -79,7 +79,17 @@ pub trait InputDriver: Send + Sync {
         hold: Vec<crate::keymap::Modifier>,
     ) -> Result<(), ToolError>;
     async fn move_to(&self, x: i32, y: i32) -> Result<(), ToolError>;
-    async fn drag(&self, path: Vec<(i32, i32)>, button: Button) -> Result<(), ToolError>;
+    /// Pixel drag. `dwell_ms` pauses with the button held before moving
+    /// (lets apps initiate box-select/orbit instead of treating a fast flick
+    /// as a click); `step_ms` paces interpolated motions. Server supplies
+    /// defaults (300/15) when the caller omits them.
+    async fn drag(
+        &self,
+        path: Vec<(i32, i32)>,
+        button: Button,
+        dwell_ms: u64,
+        step_ms: u64,
+    ) -> Result<(), ToolError>;
     async fn scroll(
         &self,
         x: i32,

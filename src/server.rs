@@ -152,6 +152,11 @@ pub struct DragArgs {
     /// Ordered pixel path; first point is the press location.
     pub path: Vec<(i32, i32)>,
     pub button: Option<Button>,
+    /// Pause with the button held before moving (default 300ms; lets apps
+    /// initiate the gesture instead of seeing a fast flick as a click).
+    pub dwell_ms: Option<u64>,
+    /// Pacing between interpolated motions (default 15ms).
+    pub step_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -524,7 +529,12 @@ impl AgentDesktop {
         }
         match reg
             .input
-            .drag(args.path, args.button.unwrap_or(Button::Left))
+            .drag(
+                args.path,
+                args.button.unwrap_or(Button::Left),
+                args.dwell_ms.unwrap_or(300).min(5000),
+                args.step_ms.unwrap_or(15).clamp(1, 500),
+            )
             .await
         {
             Ok(()) => ok(json!({"ok": true, "diff": {"vision_fallback": true}})),

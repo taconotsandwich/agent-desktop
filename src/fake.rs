@@ -65,7 +65,13 @@ impl InputDriver for FakeInput {
     async fn move_to(&self, _x: i32, _y: i32) -> Result<(), ToolError> {
         Ok(())
     }
-    async fn drag(&self, _p: Vec<(i32, i32)>, _b: Button) -> Result<(), ToolError> {
+    async fn drag(
+        &self,
+        _p: Vec<(i32, i32)>,
+        _b: Button,
+        _dwell_ms: u64,
+        _step_ms: u64,
+    ) -> Result<(), ToolError> {
         Ok(())
     }
     async fn scroll(

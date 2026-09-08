@@ -80,7 +80,13 @@ impl InputDriver for KwinInput {
 s.pointer_move(x, y).await.map_err(|e| e.tool(true))
     }
 
-    async fn drag(&self, path: Vec<(i32, i32)>, button: Button) -> Result<(), ToolError> {
+    async fn drag(
+        &self,
+        path: Vec<(i32, i32)>,
+        button: Button,
+        dwell_ms: u64,
+        step_ms: u64,
+    ) -> Result<(), ToolError> {
         let (start, rest) = path.split_first().ok_or_else(|| {
             BackendError::Unsupported {
                 reason: "drag needs ≥1 point".into(),
@@ -90,7 +96,7 @@ s.pointer_move(x, y).await.map_err(|e| e.tool(true))
         let s = EisSession::open(&self.bus, CAP_POINTER, false, true)
             .await
             .map_err(|e| e.tool(true))?;
-        s.drag(start, rest, button_code(button))
+        s.drag(start, rest, button_code(button), dwell_ms, step_ms)
             .await
             .map_err(|e| e.tool(true))
     }
@@ -308,6 +314,8 @@ impl EisSession {
         start: &(i32, i32),
         rest: &[(i32, i32)],
         button: u32,
+        dwell_ms: u64,
+        step_ms: u64,
     ) -> Result<(), BackendError> {
         let dev = self.device.device().clone();
         let abs = self.pointer_abs()?;
@@ -319,7 +327,9 @@ impl EisSession {
         tokio::time::sleep(Duration::from_millis(20)).await;
         btn.button(button, ei::button::ButtonState::Press);
         self.frame(&dev)?;
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Dwell with the button held so apps initiate drag gestures
+        // (box-select/orbit/move) instead of seeing a fast press-release flick.
+        tokio::time::sleep(Duration::from_millis(dwell_ms)).await;
         // Interpolate between consecutive points, 10 steps per segment.
         let mut prev = *start;
         for &(ex, ey) in rest {
@@ -328,7 +338,7 @@ impl EisSession {
                 let fy = prev.1 as f32 + (ey - prev.1) as f32 * (i as f32 / 10.0);
                 abs.motion_absolute(fx, fy);
                 self.frame(&dev)?;
-                tokio::time::sleep(Duration::from_millis(15)).await;
+                tokio::time::sleep(Duration::from_millis(step_ms)).await;
             }
             prev = (ex, ey);
         }
