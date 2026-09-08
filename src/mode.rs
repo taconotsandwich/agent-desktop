@@ -32,6 +32,7 @@ pub struct VirtualSeat {
     pub bus_address: String,
     pub wayland_display: String,
     pub env_file: String,
+    overlay: std::path::PathBuf,
 }
 
 impl VirtualSeat {
@@ -74,9 +75,32 @@ impl VirtualSeat {
             path: svc_dir.to_string_lossy().to_string(),
             error: e.to_string(),
         })?;
+        // dbus-daemon activation cannot execute the stock at-spi helpers
+        // (gnome_atspi_exec_t needs a domain transition this private bus
+        // cannot grant — Spawn.ExecFailed Permission denied). Stage copies
+        // into the seat dir (user_tmp_t executes without transition) and
+        // point the overlay services at them.
+        let bin_dir = overlay.join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| BackendError::Io {
+            path: bin_dir.to_string_lossy().to_string(),
+            error: e.to_string(),
+        })?;
+        for helper in ["at-spi-bus-launcher", "at-spi2-registryd"] {
+            let src = format!("/usr/libexec/{helper}");
+            let dst = bin_dir.join(helper);
+            if !dst.is_file() {
+                std::fs::copy(&src, &dst).map_err(|e| BackendError::Io {
+                    path: dst.to_string_lossy().to_string(),
+                    error: e.to_string(),
+                })?;
+            }
+        }
         std::fs::write(
             svc_dir.join("org.a11y.Bus.service"),
-            "[D-BUS Service]\nName=org.a11y.Bus\nExec=/usr/libexec/at-spi-bus-launcher\n",
+            format!(
+                "[D-BUS Service]\nName=org.a11y.Bus\nExec={}/at-spi-bus-launcher\n",
+                bin_dir.to_string_lossy()
+            ),
         )
         .map_err(|e| BackendError::Io {
             path: "org.a11y.Bus.service".into(),
@@ -87,7 +111,10 @@ impl VirtualSeat {
         // virtual seat; provide a plain Exec activation.
         std::fs::write(
             svc_dir.join("org.a11y.atspi.Registry.service"),
-            "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec=/usr/libexec/at-spi2-registryd\n",
+            format!(
+                "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec={}/at-spi2-registryd\n",
+                bin_dir.to_string_lossy()
+            ),
         )
         .map_err(|e| BackendError::Io {
             path: "org.a11y.atspi.Registry.service".into(),
@@ -174,11 +201,13 @@ impl VirtualSeat {
             bus_address,
             wayland_display,
             env_file,
+            overlay,
         })
     }
 
     pub fn shutdown(self) {
         Self::kill_all(&self.pids);
+        let _ = std::fs::remove_dir_all(&self.overlay);
     }
 
     fn kill_all(pids: &[i32]) {
