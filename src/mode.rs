@@ -26,6 +26,37 @@ impl Mode {
     }
 }
 
+/// Seat parameters. Seat 0 keeps the legacy names (wayland-virtual,
+/// agent-desktop-virtual.env, VNC 5910); seats ≥1 are numbered.
+#[derive(Debug, Clone, Copy)]
+pub struct SeatParams {
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl SeatParams {
+    pub fn socket_name(self) -> String {
+        if self.id == 0 {
+            "wayland-virtual".to_string()
+        } else {
+            format!("wayland-virtual-{}", self.id)
+        }
+    }
+
+    pub fn default_env_file(self) -> String {
+        if self.id == 0 {
+            "/tmp/agent-desktop-virtual.env".to_string()
+        } else {
+            format!("/tmp/agent-desktop-virtual-{}.env", self.id)
+        }
+    }
+
+    pub fn vnc_port(self) -> u16 {
+        5910 + self.id.min(90) as u16
+    }
+}
+
 /// Handle to a booted virtual seat. Kills children on [`shutdown`].
 pub struct VirtualSeat {
     pids: Vec<i32>,
@@ -40,6 +71,10 @@ impl VirtualSeat {
     /// env so all drivers bind to the virtual seat, and writes an env file
     /// so out-of-process launchers (ssh, CI) can join the same seat.
     pub async fn boot(width: u32, height: u32) -> Result<Self, BackendError> {
+        Self::boot_with(SeatParams { id: 0, width, height }).await
+    }
+
+    pub async fn boot_with(params: SeatParams) -> Result<Self, BackendError> {
         let out = Command::new("dbus-launch")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -61,7 +96,7 @@ impl VirtualSeat {
         if let Some(pid) = parse_dbus_pid(&sh) {
             pids.push(pid);
         }
-        let wayland_display = "wayland-virtual".to_string();
+        let wayland_display = params.socket_name();
         // SAFETY: bootstrap runs before any tool dispatch reads env.
         unsafe {
             std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &bus_address);
@@ -124,7 +159,10 @@ impl VirtualSeat {
             Ok(p) => pids.push(p),
             Err(e) => tracing::warn!("at-spi2-registryd failed: {}", e.tool(false).message),
         }
-        let vnc_port = std::env::var("AGENT_DESKTOP_VNC_PORT").unwrap_or_else(|_| "5910".into());
+        let vnc_port = std::env::var("AGENT_DESKTOP_VNC_PORT")
+            .ok()
+            .filter(|v| v.parse::<u16>().is_ok())
+            .unwrap_or_else(|| params.vnc_port().to_string());
         match spawn_child(
             "wayvnc",
             &["127.0.0.1", &vnc_port],
@@ -139,7 +177,7 @@ impl VirtualSeat {
         }
 
         let env_file = std::env::var("AGENT_DESKTOP_ENV_FILE")
-            .unwrap_or_else(|_| "/tmp/agent-desktop-virtual.env".into());
+            .unwrap_or_else(|_| params.default_env_file());
         let contents = format!(
             "DBUS_SESSION_BUS_ADDRESS={bus_address}\nWAYLAND_DISPLAY={wayland_display}\nXDG_SESSION_TYPE=wayland\nXDG_CURRENT_DESKTOP=KDE\n"
         );
@@ -157,6 +195,13 @@ impl VirtualSeat {
 
     pub fn shutdown(self) {
         Self::kill_all(&self.pids);
+    }
+
+    /// Release ownership of child pids without killing (farm table owns them).
+    pub fn into_pids(self) -> Vec<i32> {
+        let pids = self.pids.clone();
+        std::mem::forget(self);
+        pids
     }
 
     fn kill_all(pids: &[i32]) {
@@ -226,6 +271,29 @@ fn nix_uid() -> u32 {
 fn path_has(program: &str) -> bool {
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .any(|d| d.join(program).is_file())
+}
+
+/// Join an existing seat: read its env file and adopt bus/display/session
+/// into this process. Used by `--join-seat` servers and out-of-process
+/// launchers. No processes are spawned and nothing is owned.
+pub fn join_seat(env_file: &str) -> Result<(), BackendError> {
+    let contents = std::fs::read_to_string(env_file).map_err(|e| BackendError::Io {
+        path: env_file.into(),
+        error: e.to_string(),
+    })?;
+    // SAFETY: join happens at startup before any tool dispatch reads env.
+    unsafe {
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                std::env::set_var(k.trim(), v.trim());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_dbus_address(sh_output: &str) -> Option<String> {

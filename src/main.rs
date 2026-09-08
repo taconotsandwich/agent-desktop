@@ -6,11 +6,12 @@ use agent_desktop::{
     },
     core::RefStore,
     drivers::{Desktop, InputDriver, SessionType, ShotDriver, WindowDriver},
-    mode::{Mode, VirtualSeat},
+    farm,
+    mode::{Mode, VirtualSeat, join_seat},
     registry::Registry,
     server::AgentDesktop,
 };
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use rmcp::{ServiceExt, transport::stdio};
 use std::sync::Arc;
 
@@ -23,6 +24,37 @@ struct Cli {
     /// kwin | gnome | x11 | fake — default: auto-detect
     #[arg(long)]
     backend: Option<String>,
+    /// Join an existing seat env file instead of booting (farm seats)
+    #[arg(long)]
+    join_seat: Option<String>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Manage a farm of parallel virtual seats (Codex-style multi-agent)
+    Farm {
+        #[command(subcommand)]
+        action: FarmAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FarmAction {
+    /// Boot N seats (ids 0..N)
+    Up {
+        #[arg(short, long, default_value_t = 2)]
+        n: u32,
+        #[arg(long, default_value_t = 1800)]
+        width: u32,
+        #[arg(long, default_value_t = 1125)]
+        height: u32,
+    },
+    /// Tear down all tracked seats
+    Down,
+    /// Show tracked seats + liveness
+    Status,
 }
 
 #[tokio::main]
@@ -32,10 +64,18 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Some(Command::Farm { action }) = cli.command {
+        return farm_cmd(action).await;
+    }
     let mode = Mode::parse(&cli.mode);
+    // Join-first: farm seats are booted once, servers attach per agent.
+    if let Some(env_file) = cli.join_seat.as_deref() {
+        join_seat(env_file)?;
+        tracing::info!(env = env_file, "joined existing seat");
+    }
     // Virtual boot FIRST: it re-points this process's bus/display env so
     // every driver below binds to the isolated seat, never the live one.
-    let _virtual_seat = if mode == Mode::Virtual {
+    let _virtual_seat = if mode == Mode::Virtual && cli.join_seat.is_none() {
         let seat = VirtualSeat::boot(1800, 1125).await?;
         tracing::info!(bus = %seat.bus_address, env = %seat.env_file, "virtual seat up");
         Some(seat)
@@ -113,9 +153,28 @@ async fn main() -> anyhow::Result<()> {
     let result = server.serve(stdio()).await?.waiting().await;
     // Normal exit (stdin EOF): take the virtual seat down with us so e2e
     // runs and restarts never leak compositors. Drop also SIGTERMs.
+    // Joined farm seats are NOT torn down here — `farm down` owns them.
     if let Some(seat) = _virtual_seat {
         seat.shutdown();
     }
     result?;
+    Ok(())
+}
+
+async fn farm_cmd(action: FarmAction) -> anyhow::Result<()> {
+    match action {
+        FarmAction::Up { n, width, height } => {
+            let table = farm::up(n, width, height).await?;
+            println!("{}", serde_json::to_string_pretty(&table)?);
+        }
+        FarmAction::Down => {
+            let table = farm::down()?;
+            println!("tore down {} seat(s)", table.seats.len());
+        }
+        FarmAction::Status => {
+            let table = farm::status();
+            println!("{}", serde_json::to_string_pretty(&table)?);
+        }
+    }
     Ok(())
 }

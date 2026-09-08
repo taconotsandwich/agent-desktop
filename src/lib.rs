@@ -5,6 +5,7 @@ pub mod core;
 pub mod drivers;
 pub mod error;
 pub mod fake;
+pub mod farm;
 pub mod keymap;
 pub mod mode;
 pub mod registry;
