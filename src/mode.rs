@@ -65,6 +65,13 @@ impl VirtualSeat {
             std::env::set_var("WAYLAND_DISPLAY", &wayland_display);
             std::env::set_var("XDG_SESSION_TYPE", "wayland");
             std::env::set_var("XDG_CURRENT_DESKTOP", "KDE");
+            if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+                #[cfg(unix)]
+                std::env::set_var(
+                    "XDG_RUNTIME_DIR",
+                    format!("/run/user/{}", nix_uid()),
+                );
+            }
         }
 
         let mut pids = Vec::new();
@@ -145,7 +152,13 @@ fn spawn_child(
     bus_address: &str,
     wayland_display: &str,
 ) -> Result<i32, BackendError> {
-    let mut cmd = Command::new(program);
+    // Some helpers (at-spi-bus-launcher) live outside PATH.
+    let resolved = if program.contains('/') || path_has(program) {
+        program.to_string()
+    } else {
+        format!("/usr/libexec/{program}")
+    };
+    let mut cmd = Command::new(&resolved);
     cmd.args(args);
     cmd.env("DBUS_SESSION_BUS_ADDRESS", bus_address);
     cmd.env("WAYLAND_DISPLAY", wayland_display);
@@ -164,6 +177,16 @@ fn spawn_child(
         .map_err(|e| BackendError::ExternalCommandFailed {
             stderr: format!("spawn {program}: {e}"),
         })
+}
+
+#[cfg(unix)]
+fn nix_uid() -> u32 {
+    unsafe { libc::getuid() }
+}
+
+fn path_has(program: &str) -> bool {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .any(|d| d.join(program).is_file())
 }
 
 fn parse_dbus_address(sh_output: &str) -> Option<String> {
