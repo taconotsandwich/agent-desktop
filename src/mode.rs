@@ -58,6 +58,13 @@ impl SeatParams {
 }
 
 /// Handle to a booted virtual seat. Kills children on [`shutdown`].
+///
+/// Rendering is HARDWARE OpenGL on the host GPU (verified: KWin reports
+/// `Mesa Intel Iris Xe` compositing via EGL, Blender reports the same
+/// renderer) — Mesa picks the DRM render node automatically, which allows
+/// concurrent clients, so the live seat keeps its GPU path untouched.
+/// No llvmpipe, no forcing env vars. Control plane (EIS / ScreenShot2 /
+/// scripting / AT-SPI) is identical to live, so virtual runs predict it.
 pub struct VirtualSeat {
     pids: Vec<i32>,
     pub bus_address: String,
