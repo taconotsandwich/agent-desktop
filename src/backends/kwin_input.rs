@@ -95,13 +95,29 @@ s.pointer_move(x, y).await.map_err(|e| e.tool(true))
             .map_err(|e| e.tool(true))
     }
 
-    async fn scroll(&self, x: i32, y: i32, dx: i32, dy: i32) -> Result<(), ToolError> {
-        let s = EisSession::open(&self.bus, CAP_POINTER, false, true)
-            .await
-            .map_err(|e| e.tool(true))?;
-        s.scroll(x, y, dx as f32 * 15.0, dy as f32 * 15.0)
-            .await
-            .map_err(|e| e.tool(true))
+    async fn scroll(
+        &self,
+        x: i32,
+        y: i32,
+        dx: i32,
+        dy: i32,
+        hold: Vec<Modifier>,
+    ) -> Result<(), ToolError> {
+        if hold.is_empty() {
+            let s = EisSession::open(&self.bus, CAP_POINTER, false, true)
+                .await
+                .map_err(|e| e.tool(true))?;
+            s.scroll(x, y, dx as f32 * 15.0, dy as f32 * 15.0)
+                .await
+                .map_err(|e| e.tool(true))
+        } else {
+            let s = EisSession::open(&self.bus, CAP_KEYBOARD | CAP_POINTER, true, true)
+                .await
+                .map_err(|e| e.tool(true))?;
+            s.scroll_with_modifiers(x, y, dx as f32 * 15.0, dy as f32 * 15.0, &hold)
+                .await
+                .map_err(|e| e.tool(true))
+        }
     }
 
     async fn type_text(&self, text: String) -> Result<(), ToolError> {
@@ -401,9 +417,34 @@ impl EisSession {
         button: u32,
         modifiers: &[Modifier],
     ) -> Result<(), BackendError> {
+        let (kdev_inner, kb) = self.modifier_hold(modifiers).await?;
+        let outcome = self.click(x, y, button, 1).await;
+        self.modifier_release(modifiers, &kdev_inner, &kb).await?;
+        outcome
+    }
+
+    /// Modifier-wrapped scroll (Ctrl+scroll zoom etc.): same hold pattern.
+    pub async fn scroll_with_modifiers(
+        &self,
+        x: i32,
+        y: i32,
+        dx: f32,
+        dy: f32,
+        modifiers: &[Modifier],
+    ) -> Result<(), BackendError> {
+        let (kdev_inner, kb) = self.modifier_hold(modifiers).await?;
+        let outcome = self.scroll(x, y, dx, dy).await;
+        self.modifier_release(modifiers, &kdev_inner, &kb).await?;
+        outcome
+    }
+
+    async fn modifier_hold(
+        &self,
+        modifiers: &[Modifier],
+    ) -> Result<(ei::Device, ei::Keyboard), BackendError> {
         let kdev = self.keyboard_device.clone().ok_or_else(|| {
             BackendError::InputDispatchFailed {
-                detail: "modifier+click requested but no keyboard device materialised".into(),
+                detail: "modifier combo requested but no keyboard device materialised".into(),
             }
         })?;
         let kdev_inner = kdev.device().clone();
@@ -420,7 +461,15 @@ impl EisSession {
             self.flush()?;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let outcome = self.click(x, y, button, 1).await;
+        Ok((kdev_inner, kb))
+    }
+
+    async fn modifier_release(
+        &self,
+        modifiers: &[Modifier],
+        kdev_inner: &ei::Device,
+        kb: &ei::Keyboard,
+    ) -> Result<(), BackendError> {
         for m in modifiers.iter().rev() {
             tokio::time::sleep(Duration::from_millis(10)).await;
             kb.key(m.keycode(), ei::keyboard::KeyState::Released);
@@ -428,7 +477,7 @@ impl EisSession {
             self.flush()?;
         }
         kdev_inner.stop_emulating(self.last_serial);
-        outcome
+        Ok(())
     }
 }
 

@@ -254,11 +254,29 @@ impl InputDriver for X11Input {
         .map(|_| ())
         .map_err(|e| e.tool(true))
     }
-    async fn scroll(&self, x: i32, y: i32, _dx: i32, dy: i32) -> Result<(), ToolError> {
+    async fn scroll(
+        &self,
+        x: i32,
+        y: i32,
+        _dx: i32,
+        dy: i32,
+        hold: Vec<keymap::Modifier>,
+    ) -> Result<(), ToolError> {
         // xdotool buttons 4/5/6/7 = up/down/left/right; repeat per notch.
         let btn = if dy < 0 { "4" } else { "5" };
         let d = display().map_err(|e| e.tool(false))?;
-        run(
+        let key_name = |m: &keymap::Modifier| match m {
+            keymap::Modifier::Ctrl => "ctrl",
+            keymap::Modifier::Shift => "shift",
+            keymap::Modifier::Alt => "alt",
+            keymap::Modifier::Super => "super",
+        };
+        for m in &hold {
+            run("mod down", "xdotool", &["keydown", key_name(m)], &d)
+                .await
+                .map_err(|e| e.tool(true))?;
+        }
+        let r = run(
             "scroll",
             "xdotool",
             &[
@@ -272,9 +290,11 @@ impl InputDriver for X11Input {
             ],
             &d,
         )
-        .await
-        .map(|_| ())
-        .map_err(|e| e.tool(true))
+        .await;
+        for m in hold.iter().rev() {
+            let _ = run("mod up", "xdotool", &["keyup", key_name(m)], &d).await;
+        }
+        r.map(|_| ()).map_err(|e| e.tool(true))
     }
     async fn type_text(&self, text: String) -> Result<(), ToolError> {
         let d = display().map_err(|e| e.tool(false))?;

@@ -546,19 +546,22 @@ impl AgentDesktop {
             Some(r) => r,
             None => return no_backend(),
         };
-        if let Some(keys) = args.keys {
-            if !keys.is_empty() {
-                return fail(
-                    BackendError::Unsupported {
-                        reason: "modifier+scroll lands later; plain scroll for now".into(),
-                    },
-                    false,
-                );
+        let mut hold: Vec<Modifier> = Vec::new();
+        for h in args.keys.unwrap_or_default() {
+            match Modifier::parse(&h) {
+                Ok(m) => hold.push(m),
+                Err(e) => return fail(e, false),
             }
         }
         match reg
             .input
-            .scroll(args.x, args.y, args.scroll_x.unwrap_or(0), args.scroll_y.unwrap_or(3))
+            .scroll(
+                args.x,
+                args.y,
+                args.scroll_x.unwrap_or(0),
+                args.scroll_y.unwrap_or(3),
+                hold,
+            )
             .await
         {
             Ok(()) => ok(json!({"ok": true})),

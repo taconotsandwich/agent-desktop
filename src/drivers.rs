@@ -80,7 +80,14 @@ pub trait InputDriver: Send + Sync {
     ) -> Result<(), ToolError>;
     async fn move_to(&self, x: i32, y: i32) -> Result<(), ToolError>;
     async fn drag(&self, path: Vec<(i32, i32)>, button: Button) -> Result<(), ToolError>;
-    async fn scroll(&self, x: i32, y: i32, dx: i32, dy: i32) -> Result<(), ToolError>;
+    async fn scroll(
+        &self,
+        x: i32,
+        y: i32,
+        dx: i32,
+        dy: i32,
+        hold: Vec<crate::keymap::Modifier>,
+    ) -> Result<(), ToolError>;
     /// Literal text only. No modifiers (poka-yoke: use `key` for chords).
     async fn type_text(&self, text: String) -> Result<(), ToolError>;
     /// Named keys/chords only (e.g. "ctrl+s"). No text.

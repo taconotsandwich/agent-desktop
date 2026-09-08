@@ -68,7 +68,14 @@ impl InputDriver for FakeInput {
     async fn drag(&self, _p: Vec<(i32, i32)>, _b: Button) -> Result<(), ToolError> {
         Ok(())
     }
-    async fn scroll(&self, _x: i32, _y: i32, _dx: i32, _dy: i32) -> Result<(), ToolError> {
+    async fn scroll(
+        &self,
+        _x: i32,
+        _y: i32,
+        _dx: i32,
+        _dy: i32,
+        _hold: Vec<crate::keymap::Modifier>,
+    ) -> Result<(), ToolError> {
         Ok(())
     }
     async fn type_text(&self, text: String) -> Result<(), ToolError> {

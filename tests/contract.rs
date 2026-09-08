@@ -47,7 +47,7 @@ async fn fake_input_rejects_empty_shapes() {
     assert!(i.click(10, 10, Button::Left, vec![]).await.is_ok());
     assert!(i.move_to(0, 0).await.is_ok());
     assert!(i.drag(vec![(0, 0), (5, 5)], Button::Left).await.is_ok());
-    assert!(i.scroll(0, 0, 0, 120).await.is_ok());
+    assert!(i.scroll(0, 0, 0, 120, vec![]).await.is_ok());
 }
 
 #[tokio::test]

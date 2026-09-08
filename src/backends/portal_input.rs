@@ -118,11 +118,25 @@ impl InputDriver for PortalInput {
             .map_err(|e| e.tool(true))
     }
 
-    async fn scroll(&self, x: i32, y: i32, dx: i32, dy: i32) -> Result<(), ToolError> {
-        let s = self.open_pointer().await.map_err(|e| e.tool(true))?;
-        s.scroll(x, y, dx as f32 * 15.0, dy as f32 * 15.0)
-            .await
-            .map_err(|e| e.tool(true))
+    async fn scroll(
+        &self,
+        x: i32,
+        y: i32,
+        dx: i32,
+        dy: i32,
+        hold: Vec<Modifier>,
+    ) -> Result<(), ToolError> {
+        let run = async {
+            if hold.is_empty() {
+                let s = self.open_pointer().await?;
+                s.scroll(x, y, dx as f32 * 15.0, dy as f32 * 15.0).await
+            } else {
+                let s = self.open_combined().await?;
+                s.scroll_with_modifiers(x, y, dx as f32 * 15.0, dy as f32 * 15.0, &hold)
+                    .await
+            }
+        };
+        run.await.map_err(|e: BackendError| e.tool(true))
     }
 
     async fn type_text(&self, text: String) -> Result<(), ToolError> {
