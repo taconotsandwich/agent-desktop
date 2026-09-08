@@ -128,18 +128,39 @@ pub struct ActOnElementArgs {
     pub action: String,
 }
 
+// ---- Codex-identical computer actions ----
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct MouseArgs {
-    /// click | move | drag | scroll
-    pub op: String,
-    pub x: Option<i32>,
-    pub y: Option<i32>,
+pub struct ClickArgs {
+    pub x: i32,
+    pub y: i32,
     pub button: Option<Button>,
-    pub path: Option<Vec<(i32, i32)>>,
-    pub dx: Option<i32>,
-    pub dy: Option<i32>,
-    pub hold: Option<Vec<String>>,
+    /// Held modifiers, e.g. ["ctrl"] for Ctrl+click.
+    pub keys: Option<Vec<String>>,
+    /// 1 (default), 2 = double-click, 3 = triple-click.
     pub count: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MoveArgs {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DragArgs {
+    /// Ordered pixel path; first point is the press location.
+    pub path: Vec<(i32, i32)>,
+    pub button: Option<Button>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ScrollArgs {
+    pub x: i32,
+    pub y: i32,
+    pub scroll_x: Option<i32>,
+    pub scroll_y: Option<i32>,
+    pub keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -148,8 +169,14 @@ pub struct TypeArgs {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct KeyArgs {
+pub struct KeypressArgs {
     pub keys: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct WaitArgs {
+    /// Pause in milliseconds (default 2000, max 30000).
+    pub ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -413,108 +440,41 @@ impl AgentDesktop {
         }
     }
 
+    // ---- Codex computer actions (identical names + shapes) ----
+
     #[tool(
-        description = "Mouse click/move/scroll/drag at coordinates. Vision fallback when AT-SPI is empty.",
+        name = "click",
+        description = "Click at coordinates. Vision fallback when AT-SPI is empty.",
         annotations(destructive_hint = true)
     )]
-    async fn mouse(
+    async fn click_at(
         &self,
-        Parameters(args): Parameters<MouseArgs>,
+        Parameters(args): Parameters<ClickArgs>,
     ) -> Result<CallToolResult, McpError> {
         let reg = match registry_of(self).await {
             Some(r) => r,
             None => return no_backend(),
         };
-        let op = args.op.to_ascii_lowercase();
         let button = args.button.unwrap_or(Button::Left);
         let mut hold: Vec<Modifier> = Vec::new();
-        for h in args.hold.unwrap_or_default() {
+        for h in args.keys.unwrap_or_default() {
             match Modifier::parse(&h) {
                 Ok(m) => hold.push(m),
                 Err(e) => return fail(e, false),
             }
         }
-        let res: Result<(), BackendError> = match op.as_str() {
-            "click" => {
-                let (x, y) = match (args.x, args.y) {
-                    (Some(x), Some(y)) => (x, y),
-                    _ => {
-                        return fail(
-                            BackendError::Unsupported {
-                                reason: "coordinate required for click".into(),
-                            },
-                            false,
-                        );
-                    }
-                };
-                let count = args.count.unwrap_or(1).clamp(1, 3);
-                let mut r = Ok(());
-                for _ in 0..count {
-                    r = reg
-                        .input
-                        .click(x, y, button, hold.clone())
-                        .await
-                        .map_err(|t| BackendError::Failed(t.message));
-                    if r.is_err() {
-                        break;
-                    }
-                }
-                r
+        let count = args.count.unwrap_or(1).clamp(1, 3);
+        let mut res: Result<(), BackendError> = Ok(());
+        for _ in 0..count {
+            res = reg
+                .input
+                .click(args.x, args.y, button, hold.clone())
+                .await
+                .map_err(|t| BackendError::Failed(t.message));
+            if res.is_err() {
+                break;
             }
-            "move" => match (args.x, args.y) {
-                (Some(x), Some(y)) => reg
-                    .input
-                    .move_to(x, y)
-                    .await
-                    .map_err(|t| BackendError::Failed(t.message)),
-                _ => Err(BackendError::Unsupported {
-                    reason: "coordinate required for move".into(),
-                }),
-            },
-            "drag" => {
-                let mut pts: Vec<(i32, i32)> = Vec::new();
-                if let (Some(x), Some(y)) = (args.x, args.y) {
-                    if let Some(mut path) = args.path {
-                        path.insert(0, (x, y));
-                        pts = path;
-                    }
-                } else if let Some(path) = args.path {
-                    pts = path;
-                }
-                if pts.len() < 2 {
-                    return fail(
-                        BackendError::Unsupported {
-                            reason: "drag needs start + end (x/y plus path, or path with ≥2 points)".into(),
-                        },
-                        false,
-                    );
-                }
-                reg.input
-                    .drag(pts, button)
-                    .await
-                    .map_err(|t| BackendError::Failed(t.message))
-            }
-            "scroll" => {
-                let (x, y) = match (args.x, args.y) {
-                    (Some(x), Some(y)) => (x, y),
-                    _ => {
-                        return fail(
-                            BackendError::Unsupported {
-                                reason: "coordinate required for scroll".into(),
-                            },
-                            false,
-                        );
-                    }
-                };
-                reg.input
-                    .scroll(x, y, args.dx.unwrap_or(0), args.dy.unwrap_or(3))
-                    .await
-                    .map_err(|t| BackendError::Failed(t.message))
-            }
-            other => Err(BackendError::Unsupported {
-                reason: format!("unsupported mouse op: {other}"),
-            }),
-        };
+        }
         match res {
             Ok(()) => ok(json!({"ok": true, "diff": {"vision_fallback": true}})),
             Err(e) => fail(e, true),
@@ -522,11 +482,97 @@ impl AgentDesktop {
     }
 
     #[tool(
-        name = "keyboard.type",
-        description = "Type literal text. No modifier keys (use keyboard.key for chords).",
+        name = "move",
+        description = "Move the cursor to coordinates without clicking.",
         annotations(destructive_hint = true)
     )]
-    async fn keyboard_type(
+    async fn move_to(
+        &self,
+        Parameters(args): Parameters<MoveArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
+        match reg.input.move_to(args.x, args.y).await {
+            Ok(()) => ok(json!({"ok": true})),
+            Err(t) => ok(json!({"ok": false,
+                "error": {"code": t.code, "message": t.message, "retryable": true}})),
+        }
+    }
+
+    #[tool(
+        name = "drag",
+        description = "Drag along a pixel path; first point is the press location.",
+        annotations(destructive_hint = true)
+    )]
+    async fn drag_path(
+        &self,
+        Parameters(args): Parameters<DragArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
+        if args.path.len() < 2 {
+            return fail(
+                BackendError::Unsupported {
+                    reason: "drag needs a path with ≥2 points".into(),
+                },
+                false,
+            );
+        }
+        match reg
+            .input
+            .drag(args.path, args.button.unwrap_or(Button::Left))
+            .await
+        {
+            Ok(()) => ok(json!({"ok": true, "diff": {"vision_fallback": true}})),
+            Err(t) => ok(json!({"ok": false,
+                "error": {"code": t.code, "message": t.message, "retryable": true}})),
+        }
+    }
+
+    #[tool(
+        name = "scroll",
+        description = "Scroll at coordinates. Positive scroll_y scrolls down.",
+        annotations(destructive_hint = true)
+    )]
+    async fn scroll_at(
+        &self,
+        Parameters(args): Parameters<ScrollArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let reg = match registry_of(self).await {
+            Some(r) => r,
+            None => return no_backend(),
+        };
+        if let Some(keys) = args.keys {
+            if !keys.is_empty() {
+                return fail(
+                    BackendError::Unsupported {
+                        reason: "modifier+scroll lands later; plain scroll for now".into(),
+                    },
+                    false,
+                );
+            }
+        }
+        match reg
+            .input
+            .scroll(args.x, args.y, args.scroll_x.unwrap_or(0), args.scroll_y.unwrap_or(3))
+            .await
+        {
+            Ok(()) => ok(json!({"ok": true})),
+            Err(t) => ok(json!({"ok": false,
+                "error": {"code": t.code, "message": t.message, "retryable": true}})),
+        }
+    }
+
+    #[tool(
+        name = "type",
+        description = "Type literal text. No modifier keys (use keypress for chords).",
+        annotations(destructive_hint = true)
+    )]
+    async fn type_text(
         &self,
         Parameters(args): Parameters<TypeArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -550,7 +596,7 @@ impl AgentDesktop {
             Ok(()) => ok(json!({"ok": true})),
             Err(t) => {
                 if t.code == "unsupported" {
-                    // Unmappable ASCII punctuation → paste path.
+                    // Unmappable character → paste path.
                     return self.paste_text(&t.message).await;
                 }
                 ok(json!({"ok": false,
@@ -560,13 +606,13 @@ impl AgentDesktop {
     }
 
     #[tool(
-        name = "keyboard.key",
-        description = "Press named keys or chords (e.g. 'ctrl+s'). No text (use keyboard.type for text).",
+        name = "keypress",
+        description = "Press named keys or chords (e.g. 'ctrl+s'). No text (use type for text).",
         annotations(destructive_hint = true)
     )]
-    async fn keyboard_key(
+    async fn press_keys(
         &self,
-        Parameters(args): Parameters<KeyArgs>,
+        Parameters(args): Parameters<KeypressArgs>,
     ) -> Result<CallToolResult, McpError> {
         if args.keys.is_empty() {
             return fail(
@@ -585,6 +631,20 @@ impl AgentDesktop {
             Err(t) => ok(json!({"ok": false,
                 "error": {"code": t.code, "message": t.message, "retryable": false}})),
         }
+    }
+
+    #[tool(
+        name = "wait",
+        description = "Pause before the next action (lets UI settle).",
+        annotations(read_only_hint = true)
+    )]
+    async fn wait_ms(
+        &self,
+        Parameters(args): Parameters<WaitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let ms = args.ms.unwrap_or(2000).clamp(1, 30000);
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        ok(json!({"ok": true, "elapsed_ms": ms}))
     }
 
     #[tool(
