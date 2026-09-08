@@ -32,7 +32,6 @@ pub struct VirtualSeat {
     pub bus_address: String,
     pub wayland_display: String,
     pub env_file: String,
-    overlay: std::path::PathBuf,
 }
 
 impl VirtualSeat {
@@ -41,66 +40,6 @@ impl VirtualSeat {
     /// env so all drivers bind to the virtual seat, and writes an env file
     /// so out-of-process launchers (ssh, CI) can join the same seat.
     pub async fn boot(width: u32, height: u32) -> Result<Self, BackendError> {
-        // Overlay FIRST: dbus-daemon reads XDG_DATA_DIRS and service dirs at
-        // startup, so everything must exist before dbus-launch runs.
-        let overlay = std::env::temp_dir().join(format!("ad-virt-{}", std::process::id()));
-        let svc_dir = overlay.join("dbus-1").join("services");
-        std::fs::create_dir_all(&svc_dir).map_err(|e| BackendError::Io {
-            path: svc_dir.to_string_lossy().to_string(),
-            error: e.to_string(),
-        })?;
-        // dbus-daemon activation cannot execute the stock at-spi helpers
-        // (gnome_atspi_exec_t needs a domain transition this private bus
-        // cannot grant — Spawn.ExecFailed Permission denied). Stage copies
-        // into the seat dir (user_tmp_t executes without transition) and
-        // point the overlay services at them. The stock Bus entry also
-        // carries SystemdService= (no user-session link here), and the
-        // stock Registry entry lives in accessibility-services/ with a
-        // --use-gnome-session flag — both shadowed with plain Exec entries.
-        let bin_dir = overlay.join("bin");
-        std::fs::create_dir_all(&bin_dir).map_err(|e| BackendError::Io {
-            path: bin_dir.to_string_lossy().to_string(),
-            error: e.to_string(),
-        })?;
-        for helper in ["at-spi-bus-launcher", "at-spi2-registryd"] {
-            let src = format!("/usr/libexec/{helper}");
-            let dst = bin_dir.join(helper);
-            if !dst.is_file() {
-                std::fs::copy(&src, &dst).map_err(|e| BackendError::Io {
-                    path: dst.to_string_lossy().to_string(),
-                    error: e.to_string(),
-                })?;
-            }
-        }
-        std::fs::write(
-            svc_dir.join("org.a11y.Bus.service"),
-            format!(
-                "[D-BUS Service]\nName=org.a11y.Bus\nExec={}/at-spi-bus-launcher\n",
-                bin_dir.to_string_lossy()
-            ),
-        )
-        .map_err(|e| BackendError::Io {
-            path: "org.a11y.Bus.service".into(),
-            error: e.to_string(),
-        })?;
-        std::fs::write(
-            svc_dir.join("org.a11y.atspi.Registry.service"),
-            format!(
-                "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec={}/at-spi2-registryd\n",
-                bin_dir.to_string_lossy()
-            ),
-        )
-        .map_err(|e| BackendError::Io {
-            path: "org.a11y.atspi.Registry.service".into(),
-            error: e.to_string(),
-        })?;
-        let overlay_dirs =
-            format!("{}:/usr/local/share:/usr/share", overlay.to_string_lossy());
-        // SAFETY: bootstrap runs before any tool dispatch reads env.
-        unsafe {
-            std::env::set_var("XDG_DATA_DIRS", &overlay_dirs);
-        }
-
         let out = Command::new("dbus-launch")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -160,16 +99,30 @@ impl VirtualSeat {
         pids.push(kwin);
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        // AT-SPI bus launcher (owns org.a11y.Bus, starts registryd). Works
-        // now that the overlay routes activation to plain Exec spawn.
+        // AT-SPI stack, both halves pre-spawned with absolute paths: on
+        // SELinux-enforcing hosts the nested dbus-daemon (unconfined_dbusd_t)
+        // is denied exec of gnome_atspi_exec_t, so D-Bus activation can never
+        // start them — pre-spawn instead (no activation hop at all).
+        // --screen-reader=1 advertises a screen reader so lazy toolkits
+        // (AccessKit-based) expose their trees too.
         match spawn_child(
             "at-spi-bus-launcher",
-            &["--launch-immediately"],
+            &["--launch-immediately", "--a11y=1", "--screen-reader=1"],
             &bus_address,
             &wayland_display,
         ) {
             Ok(p) => pids.push(p),
             Err(e) => tracing::warn!("at-spi-bus-launcher failed: {}", e.tool(false).message),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        match spawn_child(
+            "at-spi2-registryd",
+            &[],
+            &bus_address,
+            &wayland_display,
+        ) {
+            Ok(p) => pids.push(p),
+            Err(e) => tracing::warn!("at-spi2-registryd failed: {}", e.tool(false).message),
         }
         let vnc_port = std::env::var("AGENT_DESKTOP_VNC_PORT").unwrap_or_else(|_| "5910".into());
         match spawn_child(
@@ -188,7 +141,7 @@ impl VirtualSeat {
         let env_file = std::env::var("AGENT_DESKTOP_ENV_FILE")
             .unwrap_or_else(|_| "/tmp/agent-desktop-virtual.env".into());
         let contents = format!(
-            "DBUS_SESSION_BUS_ADDRESS={bus_address}\nWAYLAND_DISPLAY={wayland_display}\nXDG_SESSION_TYPE=wayland\nXDG_CURRENT_DESKTOP=KDE\nXDG_DATA_DIRS={overlay_dirs}\n"
+            "DBUS_SESSION_BUS_ADDRESS={bus_address}\nWAYLAND_DISPLAY={wayland_display}\nXDG_SESSION_TYPE=wayland\nXDG_CURRENT_DESKTOP=KDE\n"
         );
         std::fs::write(&env_file, contents).map_err(|e| BackendError::Io {
             path: env_file.clone(),
@@ -199,13 +152,11 @@ impl VirtualSeat {
             bus_address,
             wayland_display,
             env_file,
-            overlay,
         })
     }
 
     pub fn shutdown(self) {
         Self::kill_all(&self.pids);
-        let _ = std::fs::remove_dir_all(&self.overlay);
     }
 
     fn kill_all(pids: &[i32]) {
