@@ -18,6 +18,7 @@ pub struct SeatRecord {
     pub wayland_display: String,
     pub env_file: String,
     pub vnc_port: u16,
+    pub runtime_dir: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -75,6 +76,7 @@ pub async fn up(n: u32, width: u32, height: u32) -> Result<FarmTable, BackendErr
             wayland_display: seat.wayland_display.clone(),
             env_file: seat.env_file.clone(),
             vnc_port: SeatParams { id, width, height }.vnc_port(),
+            runtime_dir: seat.runtime_dir(),
             pids: seat.into_pids(),
         };
         table.seats.push(record);
@@ -104,6 +106,7 @@ pub fn down() -> Result<FarmTable, BackendError> {
             }
         }
         let _ = std::fs::remove_file(&seat.env_file);
+        let _ = std::fs::remove_dir_all(&seat.runtime_dir);
     }
     let _ = std::fs::remove_file(farm_file());
     Ok(table)

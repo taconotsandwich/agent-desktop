@@ -221,6 +221,10 @@ impl VirtualSeat {
         pids
     }
 
+    pub fn runtime_dir(&self) -> String {
+        self.seat_runtime.to_string_lossy().to_string()
+    }
+
     fn kill_all(pids: &[i32]) {
         for pid in pids {
             unsafe {
