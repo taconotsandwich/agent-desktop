@@ -53,11 +53,15 @@ impl VirtualSeat {
                 stderr: String::from_utf8_lossy(&out.stderr).to_string(),
             });
         }
-        let bus_address = parse_dbus_address(&String::from_utf8_lossy(&out.stdout)).ok_or_else(
-            || BackendError::ExternalCommandFailed {
-                stderr: "could not parse DBUS_SESSION_BUS_ADDRESS".into(),
-            },
-        )?;
+        let sh = String::from_utf8_lossy(&out.stdout);
+        let bus_address = parse_dbus_address(&sh).ok_or_else(|| BackendError::ExternalCommandFailed {
+            stderr: "could not parse DBUS_SESSION_BUS_ADDRESS".into(),
+        })?;
+        let mut pids = Vec::new();
+        // Track the bus daemon itself so boots never leak it.
+        if let Some(pid) = parse_dbus_pid(&sh) {
+            pids.push(pid);
+        }
         let wayland_display = "wayland-virtual".to_string();
         // SAFETY: bootstrap runs before any tool dispatch reads env.
         unsafe {
@@ -75,6 +79,9 @@ impl VirtualSeat {
         }
 
         let mut pids = Vec::new();
+        if let Some(pid) = parse_dbus_pid(&sh) {
+            pids.push(pid);
+        }
         let kwin = spawn_child(
             "kwin_wayland",
             &[
@@ -214,6 +221,15 @@ fn parse_dbus_address(sh_output: &str) -> Option<String> {
                 .trim_matches('\'')
                 .trim_matches('"');
             return Some(cleaned.to_string());
+        }
+    }
+    None
+}
+
+fn parse_dbus_pid(sh_output: &str) -> Option<i32> {
+    for line in sh_output.lines() {
+        if let Some(rest) = line.strip_prefix("DBUS_SESSION_BUS_PID=") {
+            return rest.trim_end_matches(';').parse().ok();
         }
     }
     None
