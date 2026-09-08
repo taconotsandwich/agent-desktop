@@ -76,10 +76,11 @@ impl VirtualSeat {
     }
 
     pub async fn boot_with(params: SeatParams) -> Result<Self, BackendError> {
-        // Per-seat runtime dir: at-spi and other per-seat sockets live under
-        // $XDG_RUNTIME_DIR, which MUST NOT be the live /run/user/$UID seat
-        // (shared at-spi/bus_0 path → cross-seat GUID chaos). Isolate it.
-        let seat_runtime = std::env::temp_dir().join(format!("ad-virt-{}-run", std::process::id()));
+        // Per-SEAT runtime dir (by seat id, NOT pid — farm boots N seats from
+        // one process). at-spi sockets live under $XDG_RUNTIME_DIR; sharing
+        // one dir across seats makes launchers fight over at-spi/bus and
+        // clients see GUID chaos. Never the live /run/user/$UID seat.
+        let seat_runtime = std::env::temp_dir().join(format!("ad-seat-{}-run", params.id));
         std::fs::create_dir_all(&seat_runtime).map_err(|e| BackendError::Io {
             path: seat_runtime.to_string_lossy().to_string(),
             error: e.to_string(),
