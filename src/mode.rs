@@ -79,6 +79,8 @@ impl VirtualSeat {
             "kwin_wayland",
             &[
                 "--virtual",
+                "--socket",
+                &wayland_display,
                 "--width",
                 &width.to_string(),
                 "--height",
