@@ -63,6 +63,7 @@ pub struct VirtualSeat {
     pub bus_address: String,
     pub wayland_display: String,
     pub env_file: String,
+    seat_runtime: std::path::PathBuf,
 }
 
 impl VirtualSeat {
@@ -75,6 +76,27 @@ impl VirtualSeat {
     }
 
     pub async fn boot_with(params: SeatParams) -> Result<Self, BackendError> {
+        // Per-seat runtime dir: at-spi and other per-seat sockets live under
+        // $XDG_RUNTIME_DIR, which MUST NOT be the live /run/user/$UID seat
+        // (shared at-spi/bus_0 path → cross-seat GUID chaos). Isolate it.
+        let seat_runtime = std::env::temp_dir().join(format!("ad-virt-{}-run", std::process::id()));
+        std::fs::create_dir_all(&seat_runtime).map_err(|e| BackendError::Io {
+            path: seat_runtime.to_string_lossy().to_string(),
+            error: e.to_string(),
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &seat_runtime,
+                std::fs::Permissions::from_mode(0o700),
+            );
+        }
+        // SAFETY: bootstrap runs before any tool dispatch reads env.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", &seat_runtime);
+        }
+
         let out = Command::new("dbus-launch")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -91,28 +113,19 @@ impl VirtualSeat {
         let bus_address = parse_dbus_address(&sh).ok_or_else(|| BackendError::ExternalCommandFailed {
             stderr: "could not parse DBUS_SESSION_BUS_ADDRESS".into(),
         })?;
-        let mut pids = Vec::new();
-        // Track the bus daemon itself so boots never leak it.
-        if let Some(pid) = parse_dbus_pid(&sh) {
-            pids.push(pid);
-        }
         let wayland_display = params.socket_name();
         // SAFETY: bootstrap runs before any tool dispatch reads env.
+        // (XDG_RUNTIME_DIR already points at the per-seat dir; dbus-launch
+        // inherited it for its daemon.)
         unsafe {
             std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &bus_address);
             std::env::set_var("WAYLAND_DISPLAY", &wayland_display);
             std::env::set_var("XDG_SESSION_TYPE", "wayland");
             std::env::set_var("XDG_CURRENT_DESKTOP", "KDE");
-            if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
-                #[cfg(unix)]
-                std::env::set_var(
-                    "XDG_RUNTIME_DIR",
-                    format!("/run/user/{}", nix_uid()),
-                );
-            }
         }
 
         let mut pids = Vec::new();
+        // Track the bus daemon itself so boots never leak it.
         if let Some(pid) = parse_dbus_pid(&sh) {
             pids.push(pid);
         }
@@ -179,7 +192,8 @@ impl VirtualSeat {
         let env_file = std::env::var("AGENT_DESKTOP_ENV_FILE")
             .unwrap_or_else(|_| params.default_env_file());
         let contents = format!(
-            "DBUS_SESSION_BUS_ADDRESS={bus_address}\nWAYLAND_DISPLAY={wayland_display}\nXDG_SESSION_TYPE=wayland\nXDG_CURRENT_DESKTOP=KDE\n"
+            "DBUS_SESSION_BUS_ADDRESS={bus_address}\nWAYLAND_DISPLAY={wayland_display}\nXDG_SESSION_TYPE=wayland\nXDG_CURRENT_DESKTOP=KDE\nXDG_RUNTIME_DIR={}\n",
+            seat_runtime.to_string_lossy(),
         );
         std::fs::write(&env_file, contents).map_err(|e| BackendError::Io {
             path: env_file.clone(),
@@ -190,11 +204,13 @@ impl VirtualSeat {
             bus_address,
             wayland_display,
             env_file,
+            seat_runtime,
         })
     }
 
     pub fn shutdown(self) {
         Self::kill_all(&self.pids);
+        let _ = std::fs::remove_dir_all(&self.seat_runtime);
     }
 
     /// Release ownership of child pids without killing (farm table owns them).
@@ -261,11 +277,6 @@ fn spawn_child(
         .map_err(|e| BackendError::ExternalCommandFailed {
             stderr: format!("spawn {program}: {e}"),
         })
-}
-
-#[cfg(unix)]
-fn nix_uid() -> u32 {
-    unsafe { libc::getuid() }
 }
 
 fn path_has(program: &str) -> bool {
