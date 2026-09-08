@@ -63,12 +63,36 @@ impl VirtualSeat {
             pids.push(pid);
         }
         let wayland_display = "wayland-virtual".to_string();
+        // Activation overlay: the stock org.a11y.Bus.service carries
+        // SystemdService=at-spi-dbus-bus.service, and on a private
+        // dbus-launch bus systemd activation fails with Permission denied
+        // (no user-session link). Shadow it with an Exec-only entry via
+        // XDG_DATA_DIRS so dbus-daemon falls back to traditional spawn.
+        let overlay = std::env::temp_dir().join(format!("ad-virt-{}", std::process::id()));
+        let svc_dir = overlay.join("dbus-1").join("services");
+        std::fs::create_dir_all(&svc_dir).map_err(|e| BackendError::Io {
+            path: svc_dir.to_string_lossy().to_string(),
+            error: e.to_string(),
+        })?;
+        std::fs::write(
+            svc_dir.join("org.a11y.Bus.service"),
+            "[D-BUS Service]\nName=org.a11y.Bus\nExec=/usr/libexec/at-spi-bus-launcher\n",
+        )
+        .map_err(|e| BackendError::Io {
+            path: "org.a11y.Bus.service".into(),
+            error: e.to_string(),
+        })?;
+        let overlay_dirs = format!(
+            "{}:/usr/local/share:/usr/share",
+            overlay.to_string_lossy()
+        );
         // SAFETY: bootstrap runs before any tool dispatch reads env.
         unsafe {
             std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &bus_address);
             std::env::set_var("WAYLAND_DISPLAY", &wayland_display);
             std::env::set_var("XDG_SESSION_TYPE", "wayland");
             std::env::set_var("XDG_CURRENT_DESKTOP", "KDE");
+            std::env::set_var("XDG_DATA_DIRS", &overlay_dirs);
             if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
                 #[cfg(unix)]
                 std::env::set_var(
@@ -100,19 +124,16 @@ impl VirtualSeat {
         pids.push(kwin);
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        // AT-SPI registry directly (not the bus-launcher: on a private
-        // dbus-launch bus there is no systemd user session, and the Registry
-        // .service file lives in accessibility-services/ where dbus-daemon
-        // activation cannot reach it — direct spawn owns org.a11y.Bus +
-        // org.a11y.atspi.Registry with no activation hop).
+        // AT-SPI bus launcher (owns org.a11y.Bus, starts registryd). Works
+        // now that the overlay routes activation to plain Exec spawn.
         match spawn_child(
-            "at-spi2-registryd",
-            &[],
+            "at-spi-bus-launcher",
+            &["--launch-immediately"],
             &bus_address,
             &wayland_display,
         ) {
             Ok(p) => pids.push(p),
-            Err(e) => tracing::warn!("at-spi2-registryd failed: {}", e.tool(false).message),
+            Err(e) => tracing::warn!("at-spi-bus-launcher failed: {}", e.tool(false).message),
         }
         let vnc_port = std::env::var("AGENT_DESKTOP_VNC_PORT").unwrap_or_else(|_| "5910".into());
         match spawn_child(
@@ -131,7 +152,7 @@ impl VirtualSeat {
         let env_file = std::env::var("AGENT_DESKTOP_ENV_FILE")
             .unwrap_or_else(|_| "/tmp/agent-desktop-virtual.env".into());
         let contents = format!(
-            "DBUS_SESSION_BUS_ADDRESS={bus_address}\nWAYLAND_DISPLAY={wayland_display}\nXDG_SESSION_TYPE=wayland\nXDG_CURRENT_DESKTOP=KDE\n"
+            "DBUS_SESSION_BUS_ADDRESS={bus_address}\nWAYLAND_DISPLAY={wayland_display}\nXDG_SESSION_TYPE=wayland\nXDG_CURRENT_DESKTOP=KDE\nXDG_DATA_DIRS={overlay_dirs}\n"
         );
         std::fs::write(&env_file, contents).map_err(|e| BackendError::Io {
             path: env_file.clone(),
