@@ -6,6 +6,7 @@ use agent_desktop::{
     },
     core::RefStore,
     drivers::{Desktop, InputDriver, SessionType, ShotDriver, WindowDriver},
+    mode::{Mode, VirtualSeat},
     registry::Registry,
     server::AgentDesktop,
 };
@@ -31,6 +32,16 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    let mode = Mode::parse(&cli.mode);
+    // Virtual boot FIRST: it re-points this process's bus/display env so
+    // every driver below binds to the isolated seat, never the live one.
+    let _virtual_seat = if mode == Mode::Virtual {
+        let seat = VirtualSeat::boot(1800, 1125).await?;
+        tracing::info!(bus = %seat.bus_address, env = %seat.env_file, "virtual seat up");
+        Some(seat)
+    } else {
+        None
+    };
     let session = detect_session();
     let desktop = detect_desktop();
     tracing::info!(mode = %cli.mode, ?session, ?desktop, "agent-desktop starting (stdio)");

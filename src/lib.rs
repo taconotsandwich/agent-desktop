@@ -6,6 +6,7 @@ pub mod drivers;
 pub mod error;
 pub mod fake;
 pub mod keymap;
+pub mod mode;
 pub mod registry;
 pub mod server;
 pub mod types;
