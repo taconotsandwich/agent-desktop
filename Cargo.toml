@@ -2,7 +2,7 @@
 name = "agent-desktop"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "General Linux desktop-control MCP server: KDE + GNOME, Wayland + X11"
 license = "MIT"
 publish = false
@@ -11,13 +11,17 @@ publish = false
 name = "agent-desktop"
 path = "src/main.rs"
 
+[[test]]
+name = "desktop"
+path = "tests/desktop/main.rs"
+
 [lib]
 name = "agent_desktop"
 path = "src/lib.rs"
 
 [dependencies]
 rmcp           = { version = "1.7", features = ["server", "macros", "transport-io"] }
-tokio          = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "io-std", "fs", "process"] }
+tokio          = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "io-std", "fs", "process", "net"] }
 zbus           = { version = "5.15", default-features = false, features = ["tokio"] }
 zvariant       = "5.7"
 clap           = { version = "4.6", features = ["derive"] }
@@ -34,13 +38,14 @@ base64         = "0.22"
 async-trait    = "0.1"
 libc           = "0.2"
 
-# Phase-gated (uncomment as drivers land):
 atspi          = { version = "=0.30", features = ["tokio"] }
 reis           = { version = "=0.6.1", features = ["tokio"] }
 image          = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 nix            = { version = "0.31", default-features = false, features = ["fs"] }
 tempfile       = "3.10"
 futures-util   = "0.3"
+rquickjs       = "=0.12.0"
+url            = "2.5"
 
 [dev-dependencies]
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "time", "io-util"] }

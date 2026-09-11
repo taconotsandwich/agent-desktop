@@ -1,11 +1,10 @@
-//! Contract suite. Runs against fakes locally; the SAME suite runs against
-//! real drivers on the alias host. A backend merges only on green.
+use fakes::{FakeInput, FakeShot, FakeWindows};
+#[path = "support/fakes.rs"]
+mod fakes;
 
 use agent_desktop::{
-    core::RefStore,
-    drivers::{Button, InputDriver, ShotDriver, ShotTarget, WindowDriver},
-    fake::{FakeInput, FakeShot, FakeWindows},
-    registry::Registry,
+    platform::drivers::{Button, InputDriver, ShotDriver, ShotTarget, WindowDriver},
+    platform::registry::Registry,
     types::Ref,
 };
 use std::sync::Arc;
@@ -17,11 +16,10 @@ async fn registry_picks_first_ok_per_capability() {
         vec![Arc::new(FakeInput)],
         vec![Arc::new(FakeWindows)],
     )
-    .await
-    .expect("fakes always probe ok");
-    assert_eq!(r.shot.id(), "fake-shot");
-    assert_eq!(r.input.id(), "fake-input");
-    assert_eq!(r.windows.id(), "fake-windows");
+    .await;
+    assert_eq!(r.shot().unwrap().id(), "fake-shot");
+    assert_eq!(r.input().unwrap().id(), "fake-input");
+    assert_eq!(r.windows().unwrap().id(), "fake-windows");
     assert_eq!(r.probes.len(), 3);
     assert!(r.probes.iter().all(|p| p.ok));
 }
@@ -34,7 +32,18 @@ async fn fake_shot_returns_mappable_frame() {
         .await
         .expect("fake capture ok");
     assert_eq!((shot.coord_w, shot.coord_h), (1600, 900));
-    assert!(!shot.bytes.is_empty());
+    let frame = agent_desktop::desktop::geometry::Frame::from_shot(
+        &shot,
+        agent_desktop::types::Bbox {
+            x: 0,
+            y: 0,
+            w: 1600,
+            h: 900,
+        },
+    )
+    .unwrap();
+    assert_eq!(frame.point(400.0, 225.0).unwrap(), (800, 450));
+    assert!(frame.point(800.0, 0.0).is_err());
 }
 
 #[tokio::test]
@@ -46,7 +55,11 @@ async fn fake_input_rejects_empty_shapes() {
     assert!(i.key(vec![]).await.is_err());
     assert!(i.click(10, 10, Button::Left, vec![]).await.is_ok());
     assert!(i.move_to(0, 0).await.is_ok());
-    assert!(i.drag(vec![(0, 0), (5, 5)], Button::Left, 300, 15).await.is_ok());
+    assert!(
+        i.drag(vec![(0, 0), (5, 5)], Button::Left, 300, 15)
+            .await
+            .is_ok()
+    );
     assert!(i.scroll(0, 0, 0, 120, vec![]).await.is_ok());
 }
 
@@ -60,13 +73,15 @@ async fn fake_windows_lists_one_active() {
 }
 
 #[tokio::test]
-async fn refs_expire_and_validate() {
-    let store = RefStore::new();
-    assert!(!store.check(&Ref("made-up".into())).await);
-    let minted = store.mint_elements(vec!["el:1".into()]).await;
-    assert!(store.check(&minted[0]).await);
-    let w = store.mint_windows(vec!["win:1".into()]).await;
-    assert!(store.check(&w[0]).await);
-    assert!(store.is_window(&w[0]).await);
-    assert!(!store.is_window(&minted[0]).await);
+async fn missing_input_does_not_disable_available_observations() {
+    let registry = Registry::probe(
+        vec![Arc::new(FakeShot)],
+        vec![],
+        vec![Arc::new(FakeWindows)],
+    )
+    .await;
+    assert!(registry.shot().is_ok());
+    assert!(registry.windows().is_ok());
+    assert!(registry.input().is_err());
+    assert_eq!(registry.probes.len(), 2);
 }

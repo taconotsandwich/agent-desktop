@@ -10,13 +10,18 @@ pub enum BackendError {
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
     #[error("backend unavailable ({backend}): {detail}")]
-    Unavailable { backend: &'static str, detail: String },
+    Unavailable {
+        backend: &'static str,
+        detail: String,
+    },
     #[error("stale handle: {0}")]
     StaleHandle(String),
     #[error("action failed: {0}")]
     Failed(String),
     #[error("bus disconnected: {detail}")]
     BusDisconnected { detail: String },
+    #[error("permission denied: {reason}")]
+    PermissionDenied { reason: String },
     #[error("i/o error on {path}: {error}")]
     Io { path: String, error: String },
     #[error("external command failed: {stderr}")]
@@ -39,6 +44,7 @@ impl BackendError {
             Self::StaleHandle(msg) => ("stale_handle", msg.clone()),
             Self::Failed(msg) => ("action_failed", msg.clone()),
             Self::BusDisconnected { detail } => ("bus_disconnected", detail.clone()),
+            Self::PermissionDenied { reason } => ("permission_denied", reason.clone()),
             Self::Io { path, error } => ("io", format!("{path}: {error}")),
             Self::ExternalCommandFailed { stderr } => ("external_command_failed", stderr.clone()),
             Self::InputDispatchFailed { detail } => ("input_dispatch_failed", detail.clone()),
@@ -48,7 +54,15 @@ impl BackendError {
         ToolError {
             code: code.into(),
             message,
-            retryable,
+            retryable: retryable && !matches!(self, Self::PermissionDenied { .. }),
         }
+    }
+}
+
+pub fn fail(code: &str, message: impl Into<String>) -> ToolError {
+    ToolError {
+        code: code.into(),
+        message: message.into(),
+        retryable: false,
     }
 }

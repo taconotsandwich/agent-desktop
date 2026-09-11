@@ -1,0 +1,136 @@
+//! Driver traits: the wayland/x11 × kde/gnome split point.
+//!
+//! Two axes compose here, they never leak into the MCP surface:
+//! - display protocol: Wayland (EIS / portal RemoteDesktop) vs X11 (xdotool)
+//! - compositor: KWin scripting vs GNOME Shell ext/introspect vs wmctrl/EWMH
+//!
+//! A11y (AT-SPI2) and clipboard (wl-* vs xclip) are shared helpers, one impl
+//! each, selected by session type — not per-compositor code.
+
+pub use crate::types::{Bbox, Button, Ref, ToolError};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+pub enum SessionType {
+    Wayland,
+    X11,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+pub enum Desktop {
+    Kde,
+    Gnome,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Probe {
+    pub id: &'static str,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Pixels. Native desktop coordinates; engine downscales previews and maps
+/// model coordinates back before dispatch.
+#[async_trait::async_trait]
+pub trait ShotDriver: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn window_capture(&self) -> bool {
+        true
+    }
+    async fn probe(&self) -> Probe;
+    async fn capture(&self, target: ShotTarget, max_long_edge: u32) -> Result<Shot, ToolError>;
+}
+
+#[derive(Debug, Clone)]
+pub enum ShotTarget {
+    Full,
+    Area(Bbox),
+    Window { id: Ref, geometry: Bbox },
+}
+
+#[derive(Debug, Clone)]
+pub struct Shot {
+    pub bytes: Vec<u8>,
+    pub format: ShotFormat,
+    /// Desktop-coordinate size the bytes map to (post-scale mapping base).
+    pub coord_w: u32,
+    pub coord_h: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ShotFormat {
+    Png,
+    Jpeg,
+}
+
+/// Pointer + keyboard as one driver: on Wayland both come from the same
+/// token (EIS fd / portal session); splitting them invites half-sessions.
+#[async_trait::async_trait]
+pub trait InputDriver: Send + Sync {
+    fn id(&self) -> &'static str;
+    async fn probe(&self) -> Probe;
+    /// Establish devices before the caller focuses the target: creating a
+    /// virtual pointer can change the compositor's focus and pointer picking.
+    async fn prepare(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+    async fn click(
+        &self,
+        x: i32,
+        y: i32,
+        button: Button,
+        hold: Vec<crate::platform::keymap::Modifier>,
+    ) -> Result<(), ToolError>;
+    async fn move_to(&self, x: i32, y: i32) -> Result<(), ToolError>;
+    /// Pixel drag. `dwell_ms` pauses with the button held before moving
+    /// (lets apps initiate box-select/orbit instead of treating a fast flick
+    /// as a click); `step_ms` paces interpolated motions. Server supplies
+    /// defaults (300/15) when the caller omits them.
+    async fn drag(
+        &self,
+        path: Vec<(i32, i32)>,
+        button: Button,
+        dwell_ms: u64,
+        step_ms: u64,
+    ) -> Result<(), ToolError>;
+    async fn scroll(
+        &self,
+        x: i32,
+        y: i32,
+        dx: i32,
+        dy: i32,
+        hold: Vec<crate::platform::keymap::Modifier>,
+    ) -> Result<(), ToolError>;
+    /// Literal text only. No modifiers (poka-yoke: use `key` for chords).
+    async fn type_text(&self, text: String) -> Result<(), ToolError>;
+    /// Named keys/chords only (e.g. "ctrl+s"). No text.
+    async fn key(&self, keys: Vec<String>) -> Result<(), ToolError>;
+}
+
+#[async_trait::async_trait]
+pub trait WindowDriver: Send + Sync {
+    fn id(&self) -> &'static str;
+    async fn probe(&self) -> Probe;
+    async fn query(&self) -> Result<Vec<WindowInfo>, ToolError>;
+    async fn focus(&self, id: &Ref) -> Result<(), ToolError>;
+    async fn minimize(&self, id: &Ref) -> Result<(), ToolError>;
+    async fn maximize(&self, id: &Ref) -> Result<(), ToolError>;
+    async fn restore(&self, id: &Ref) -> Result<(), ToolError>;
+    async fn close(&self, id: &Ref) -> Result<(), ToolError>;
+    async fn move_resize(&self, id: &Ref, geo: Bbox) -> Result<(), ToolError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowInfo {
+    pub window_ref: Ref,
+    pub title: String,
+    pub class: String,
+    pub app_id: String,
+    pub pid: Option<u32>,
+    pub minimized: bool,
+    pub client_protocol: Option<String>,
+    pub geometry: Bbox,
+    pub screen: u32,
+    pub is_active: bool,
+}

@@ -36,7 +36,7 @@ pub enum Button {
     Middle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Bbox {
     pub x: i32,
     pub y: i32,

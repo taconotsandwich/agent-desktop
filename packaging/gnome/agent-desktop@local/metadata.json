@@ -1,0 +1,7 @@
+{
+  "uuid": "agent-desktop@local",
+  "name": "Agent Desktop",
+  "description": "Window targeting and screenshots for the Agent Desktop MCP server",
+  "shell-version": ["49"],
+  "version": 1
+}

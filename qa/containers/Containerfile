@@ -1,0 +1,21 @@
+ARG BASE=registry.fedoraproject.org/fedora@sha256:193c2604fb0f3f808b46c3f83249ac03dd5989896fa9e48fd787d205a1a4dc71
+FROM ${BASE}
+RUN dnf install -y cargo rust gcc gcc-c++ make pkgconf-pkg-config dbus-daemon dbus-tools glib2 at-spi2-core \
+    kwin kwin-x11 plasma-workspace plasma-workspace-x11 xdg-desktop-portal xdg-desktop-portal-kde \
+    gnome-shell gnome-session xdg-desktop-portal-gnome gnome-settings-daemon \
+    xorg-x11-server-Xvfb xorg-x11-xauth xdotool wmctrl xprop maim xclip wl-clipboard \
+    mesa-dri-drivers mesa-libEGL mesa-libGL glx-utils krita blender procps-ng \
+    libxkbcommon-devel wayland-devel fontconfig dejavu-sans-fonts \
+    && dnf clean all
+RUN useradd --uid 1000 --create-home qa
+RUN dnf install -y unzip \
+    && dnf upgrade -y https://kojipkgs.fedoraproject.org/packages/blender/5.1.2/3.fc43/x86_64/blender-5.1.2-3.fc43.x86_64.rpm \
+    && blender --version \
+    && dnf clean all
+RUN setcap -r /usr/bin/kwin_wayland && install -d -m 1777 /tmp/.X11-unix
+RUN dnf install -y xmodmap && dnf clean all
+COPY qa/containers/session.sh /usr/local/bin/agent-desktop-qa-session
+RUN chmod 755 /usr/local/bin/agent-desktop-qa-session
+USER qa
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/agent-desktop-qa-session"]
