@@ -54,17 +54,21 @@ jobs:
           sudo apt-get install -y "linux-modules-extra-$(uname -r)"
           sudo modprobe vkms
           for attempt in {1..120}; do compgen -G "/dev/dri/card*" > /dev/null && break; sleep 0.5; done
-          for attempt in {1..120}; do
-            blocked=0
+          for attempt in {1..30}; do
             for node in /dev/dri/card* /dev/dri/renderD*; do
-              if [[ -e "$node" ]]; then
-                sudo chmod 0666 "$node"
-                if [[ ! -r "$node" || ! -w "$node" ]]; then blocked=$((blocked + 1)); fi
-              fi
+              if [[ -e "$node" ]]; then sudo chmod 0666 "$node"; fi
             done
-            if (( blocked == 0 )); then break; fi
             sleep 0.5
           done
+          blocked=0
+          for node in /dev/dri/card* /dev/dri/renderD*; do
+            if [[ -e "$node" && ( ! -r "$node" || ! -w "$node" ) ]]; then blocked=$((blocked + 1)); fi
+          done
+          if (( blocked > 0 )); then
+            echo "DRM nodes are not accessible to the runner user"
+            ls -l /dev/dri
+            exit 1
+          fi
           ls -l /dev/dri
       - name: Run isolated suite
         timeout-minutes: 25
