@@ -101,51 +101,9 @@ pub async fn workflow(
     client
         .screenshot("app", &artifacts.join("edited.png"))
         .await?;
-    client.eval("await app.pressKey('ctrl+shift+s');").await?;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    save_state(client, "app", &artifacts.join("save-dialog.json")).await?;
-    let (dialog_width, dialog_height) = client
-        .screenshot("app", &artifacts.join("save-dialog.png"))
-        .await?;
-    let desktop = client.json("await agentdesktop.getState();").await?;
-    std::fs::write(
-        artifacts.join("desktop.json"),
-        serde_json::to_vec_pretty(&desktop)?,
-    )?;
-    let state = client.json("await app.getAXState();").await?;
-    anyhow::ensure!(
-        state["window"]["title"] == "Blender File View",
-        "save dialog appeared"
-    );
-    let folder = serde_json::to_string(&artifacts)?;
-    client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+l'); await app.pressKey('ctrl+a'); await app.typeText({folder}); await app.pressKey('Enter');",dialog_width/2,dialog_height/2)).await?;
-    client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+a'); await app.typeText('desktop-qa.blend'); await app.pressKey('Enter');",dialog_width/2,dialog_height-22)).await?;
-    client
-        .screenshot("app", &artifacts.join("save-ready.png"))
-        .await?;
-    client
-        .eval(&format!(
-            "await app.click([{},{}]);",
-            dialog_width - 70,
-            dialog_height - 22
-        ))
-        .await?;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    client
-        .screenshot("app", &artifacts.join("save-result.png"))
-        .await?;
+    save_scene(client, artifacts).await?;
     let document = artifacts.join("desktop-qa.blend");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    loop {
-        if std::fs::metadata(&document).is_ok_and(|metadata| metadata.len() > 10_000) {
-            break;
-        }
-        anyhow::ensure!(
-            std::time::Instant::now() < deadline,
-            "Blender did not save its scene"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    let folder = serde_json::to_string(artifacts)?;
     let verify = artifacts.join("verify.py");
     std::fs::write(
         &verify,
@@ -193,4 +151,59 @@ pub async fn workflow(
         "Blender reopened the scene"
     );
     Ok(())
+}
+
+/// Drive Blender's file view until the scene lands in the artifacts directory.
+/// The dialog is a separate XWayland window with no accessibility tree, and
+/// under software compositing the first input can arrive before Blender has
+/// taken focus, leaving the dialog at its defaults; redo the sequence then.
+async fn save_scene(client: &mut Joiner, artifacts: &Path) -> Result<()> {
+    let document = artifacts.join("desktop-qa.blend");
+    let folder = serde_json::to_string(artifacts)?;
+    for attempt in 1..=3 {
+        client.eval("await app.pressKey('ctrl+shift+s');").await?;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let (dialog_width, dialog_height) = client
+            .screenshot("app", &artifacts.join("save-dialog.png"))
+            .await?;
+        if attempt == 1 {
+            save_state(client, "app", &artifacts.join("save-dialog.json")).await?;
+            let desktop = client.json("await agentdesktop.getState();").await?;
+            std::fs::write(
+                artifacts.join("desktop.json"),
+                serde_json::to_vec_pretty(&desktop)?,
+            )?;
+        }
+        let state = client.json("await app.getAXState();").await?;
+        anyhow::ensure!(
+            state["window"]["title"] == "Blender File View",
+            "save dialog appeared"
+        );
+        client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+l'); await app.pressKey('ctrl+a'); await app.typeText({folder}); await app.pressKey('Enter');",dialog_width/2,dialog_height/2)).await?;
+        client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+a'); await app.typeText('desktop-qa.blend'); await app.pressKey('Enter');",dialog_width/2,dialog_height-22)).await?;
+        client
+            .screenshot("app", &artifacts.join("save-ready.png"))
+            .await?;
+        client
+            .eval(&format!(
+                "await app.click([{},{}]);",
+                dialog_width - 70,
+                dialog_height - 22
+            ))
+            .await?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if std::fs::metadata(&document).is_ok_and(|metadata| metadata.len() > 10_000) {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        client
+            .screenshot("app", &artifacts.join(format!("save-result-{attempt}.png")))
+            .await?;
+    }
+    anyhow::bail!("Blender did not save its scene")
 }
