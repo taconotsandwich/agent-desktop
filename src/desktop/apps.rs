@@ -2,7 +2,7 @@ use crate::error::fail;
 use crate::platform::drivers::WindowInfo;
 use crate::types::ToolError;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize)]
@@ -63,92 +63,56 @@ impl Application {
     }
 }
 
-pub fn catalog() -> Vec<Application> {
-    let mut roots = Vec::new();
-    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
-        roots.push(PathBuf::from(data));
-    } else if let Some(home) = std::env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join(".local/share"));
+/// Desktop file ID as the freedesktop spec defines it for display: the path
+/// under the applications directory with `/` replaced by `-`. Unlike the
+/// crate's `DesktopEntry::id()`, the `.desktop` suffix is preserved for
+/// compatibility with the ids this server has always reported.
+fn entry_id(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    match text.rsplit_once("/applications/") {
+        Some((_, relative)) => relative.replace('/', "-"),
+        None => path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
     }
-    roots.extend(std::env::split_paths(
-        &std::env::var_os("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into()),
-    ));
-    let mut seen = BTreeSet::new();
-    let mut apps = Vec::new();
-    for root in roots {
-        let root = root.join("applications");
-        scan(&root, &root, &mut seen, &mut apps, 0);
-    }
-    apps.sort_by(|a, b| a.id.cmp(&b.id));
-    apps
 }
 
-fn scan(
-    root: &Path,
-    dir: &Path,
-    seen: &mut BTreeSet<String>,
-    apps: &mut Vec<Application>,
-    depth: usize,
-) {
-    if depth > 8 {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            scan(root, &path, seen, apps, depth + 1);
+pub fn catalog() -> Vec<Application> {
+    let locales = freedesktop_desktop_entry::get_languages_from_env();
+    let mut seen = BTreeSet::new();
+    let mut apps = Vec::new();
+    for entry in freedesktop_desktop_entry::desktop_entries(&locales) {
+        if entry.type_() != Some("Application") || entry.no_display() || entry.hidden() {
             continue;
         }
-        if path.extension().is_none_or(|ext| ext != "desktop") {
-            continue;
-        }
-        let Ok(relative) = path.strip_prefix(root) else {
-            continue;
-        };
-        let id = relative.to_string_lossy().replace('/', "-");
+        let id = entry_id(&entry.path);
         if !seen.insert(id.clone()) {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Some(name) = entry.name(&locales) else {
             continue;
         };
-        let mut fields = BTreeMap::new();
-        let mut active = false;
-        for line in contents.lines() {
-            let line = line.trim();
-            if line.starts_with('[') {
-                active = line == "[Desktop Entry]";
-            }
-            if active && let Some((key, value)) = line.split_once('=') {
-                fields.insert(key, value);
-            }
-        }
-        if fields.get("Type") != Some(&"Application")
-            || fields.get("Hidden") == Some(&"true")
-            || fields.get("NoDisplay") == Some(&"true")
-        {
-            continue;
-        }
-        let Some(name) = fields.get("Name") else {
-            continue;
-        };
-        let executable = fields
-            .get("Exec")
-            .and_then(|exec| exec.split_whitespace().next())
-            .and_then(|program| Path::new(program.trim_matches('"')).file_name())
-            .map(|name| name.to_string_lossy().into_owned())
+        let executable = entry
+            .parse_exec()
+            .ok()
+            .and_then(|argv| argv.first().cloned())
+            .and_then(|program| {
+                Path::new(&program)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
             .unwrap_or_default();
         apps.push(Application {
             id,
-            name: (*name).into(),
-            desktop_file: path,
-            startup_class: fields.get("StartupWMClass").copied().unwrap_or("").into(),
+            name: name.into_owned(),
+            desktop_file: entry.path.clone(),
+            startup_class: entry.startup_wm_class().unwrap_or("").into(),
             executable,
         });
     }
+    apps.sort_by(|a, b| a.id.cmp(&b.id));
+    apps
 }
 
 pub fn find(query: &str) -> Result<Application, ToolError> {
