@@ -23,7 +23,7 @@ jobs:
           - suite: desktop
             desktop: KDE
             protocol: wayland
-            render_device: /dev/dri/renderD128
+            render_device: /dev/dri
           - suite: desktop
             desktop: KDE
             protocol: x11
@@ -33,7 +33,7 @@ jobs:
           - suite: farm
             desktop: KDE
             protocol: wayland
-            render_device: /dev/dri/renderD128
+            render_device: /dev/dri
     env:
       QA_IMAGE: localhost/agent-desktop-qa:fedora43
       QA_ARTIFACTS: ${{ github.workspace }}/target/qa/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}-${{ matrix.desktop }}-${{ matrix.protocol }}
