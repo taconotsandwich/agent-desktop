@@ -183,7 +183,10 @@ impl Engine {
         self.focus(id).await?;
         let clipboard = crate::desktop::clipboard::Clipboard::replace(self.session, text).await?;
         let input = self.registry.input()?.key(vec!["ctrl+v".into()]).await;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Keep serving the selection until the target has had time to service
+        // the paste; software-rendered sessions need well over the dispatch
+        // latency to copy it, and restoring early loses the paste entirely.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         let restore = clipboard.restore().await;
         input?;
         restore

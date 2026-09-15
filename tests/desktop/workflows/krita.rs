@@ -111,36 +111,54 @@ async fn qa_krita_workflow() -> Result<()> {
         .eval("await app.pressKey('ctrl+w'); await app.pressKey('ctrl+o');")
         .await?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let state = loop {
+    loop {
         let state = client.json("await app.getAXState();").await?;
         if state["window"]["title"]
             .as_str()
             .is_some_and(|title| title.starts_with("Open Images"))
         {
-            break state;
+            break;
         }
         anyhow::ensure!(
             std::time::Instant::now() < deadline,
             "open dialog did not appear"
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let document_json = serde_json::to_string(&document)?;
+    let state = {
+        let mut pasted = None;
+        for _ in 0..3 {
+            let state = client.json("await app.getAXState();").await?;
+            let input = filename_input(&state)?;
+            client
+                .eval(&format!(
+                    "await app.click({input}); await app.pressKey('ctrl+a'); await app.paste({document_json});"
+                ))
+                .await?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                let state = client.json("await app.getAXState();").await?;
+                if state["elements"]
+                    .as_array()
+                    .context("elements")?
+                    .iter()
+                    .any(|row| row["value"]["text"].as_str() == document.to_str())
+                {
+                    pasted = Some(state);
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+            if pasted.is_some() {
+                break;
+            }
+        }
+        pasted.context("Unicode paste appears in the open dialog")?
     };
-    let input = filename_input(&state)?;
-    client
-        .eval(&format!(
-            "await app.click({input}); await app.pressKey('ctrl+a'); await app.paste({});",
-            serde_json::to_string(&document)?
-        ))
-        .await?;
-    let state = client.json("await app.getAXState();").await?;
-    anyhow::ensure!(
-        state["elements"]
-            .as_array()
-            .context("elements")?
-            .iter()
-            .any(|row| row["value"]["text"].as_str() == document.to_str()),
-        "Unicode paste appears in the open dialog"
-    );
     let open = element(&state, "button", "Open")?;
     client.eval(&format!("await app.click({open});")).await?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
