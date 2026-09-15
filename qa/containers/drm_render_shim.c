@@ -1,16 +1,19 @@
 // QA harness shim: KWin's virtual backend requires a DRM render node, but the
 // only software DRM device GitHub-hosted runners can offer (vkms) exposes just
 // a primary node, so the compositor falls back to QPainter and every
-// ScreenShot2 capture is cancelled. Present a primary node as a render node to
-// kwin_wayland so compositing initializes EGL on that device.
+// ScreenShot2 capture is cancelled. Present the primary node as a render node
+// to kwin_wayland whenever no render node is usable, so compositing can
+// initialize EGL on that device.
 //
-// Scoped to kwin_wayland and to devices that have no render node: inert on
-// hosts with real render nodes and for every other process in the session.
+// Scoped to kwin_wayland and to devices whose render node is missing or not
+// mounted into the session: inert on hosts with a real, accessible render
+// node and for every other process in the session.
 #define _GNU_SOURCE
 
 #include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <xf86drm.h>
 
 typedef int (*DrmGetDevices2)(unsigned int, drmDevicePtr[], int);
@@ -46,13 +49,20 @@ int drmGetDevices2(unsigned int flags, drmDevicePtr devices[], int max_devices) 
     const int render = 1 << DRM_NODE_RENDER;
     for (int index = 0; index < count; index++) {
         drmDevicePtr device = devices[index];
-        if (!device) {
+        if (!device || !device->nodes[DRM_NODE_PRIMARY]) {
             continue;
         }
-        if ((device->available_nodes & primary) && !(device->available_nodes & render)) {
-            device->available_nodes |= render;
-            device->nodes[DRM_NODE_RENDER] = device->nodes[DRM_NODE_PRIMARY];
+        if (!(device->available_nodes & primary)) {
+            continue;
         }
+        if (device->available_nodes & render) {
+            const char *node = device->nodes[DRM_NODE_RENDER];
+            if (node && access(node, R_OK | W_OK) == 0) {
+                continue;
+            }
+        }
+        device->available_nodes |= render;
+        device->nodes[DRM_NODE_RENDER] = device->nodes[DRM_NODE_PRIMARY];
     }
     return count;
 }

@@ -13,11 +13,12 @@ export QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 export GTK_A11Y=atspi
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
-# Software DRM devices carry no hardware render node; point Mesa at the
-# software KMS driver and let the shim present that node to KWin so it can
-# initialize EGL instead of falling back to QPainter compositing.
-if ! compgen -G "/dev/dri/renderD*" > /dev/null 2>&1; then
-    export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast
+# KDE Wayland sessions on GPU-less hosts run on a software DRM device that
+# carries no render node; point Mesa at the software driver and let the shim
+# present that node to KWin so it can initialize EGL instead of falling back
+# to QPainter compositing.
+if [[ "$QA_DESKTOP" == KDE && "$QA_PROTOCOL" == wayland ]] && ! compgen -G "/dev/dri/renderD*" > /dev/null 2>&1; then
+    export MESA_LOADER_DRIVER_OVERRIDE=swrast
     if [[ -f /usr/local/lib/drm_render_shim.so ]]; then
         export LD_PRELOAD=/usr/local/lib/drm_render_shim.so
     fi
