@@ -46,17 +46,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y podman crun
+      - name: Build QA image with cached layers
+        run: podman build --layers -t "$QA_IMAGE" -f qa/containers/Containerfile .
       - name: Provision virtual DRM device
         if: matrix.render_device != ''
         run: |
           sudo apt-get install -y "linux-modules-extra-$(uname -r)"
           sudo modprobe vkms
-          for attempt in {1..60}; do compgen -G "/dev/dri/card*" > /dev/null && break; sleep 0.25; done
-          compgen -G "/dev/dri/card*" > /dev/null
-          sudo chmod 0666 /dev/dri/card* /dev/dri/renderD* 2>/dev/null || true
+          for attempt in {1..120}; do compgen -G "/dev/dri/card*" > /dev/null && break; sleep 0.5; done
+          for attempt in {1..120}; do
+            blocked=0
+            for node in /dev/dri/card* /dev/dri/renderD*; do
+              if [[ -e "$node" ]]; then
+                sudo chmod 0666 "$node"
+                if [[ ! -r "$node" || ! -w "$node" ]]; then blocked=$((blocked + 1)); fi
+              fi
+            done
+            if (( blocked == 0 )); then break; fi
+            sleep 0.5
+          done
           ls -l /dev/dri
-      - name: Build QA image with cached layers
-        run: podman build --layers -t "$QA_IMAGE" -f qa/containers/Containerfile .
       - name: Run isolated suite
         timeout-minutes: 25
         env:
