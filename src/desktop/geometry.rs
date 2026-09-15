@@ -14,15 +14,15 @@ pub struct Frame {
 
 impl Frame {
     pub fn from_shot(shot: &Shot, geometry: Bbox) -> Result<Self, ToolError> {
-        let image = image::load_from_memory(&shot.bytes)
+        let size = imagesize::blob_size(&shot.bytes)
             .map_err(|error| fail("invalid_screenshot", error.to_string()))?;
         if geometry.w == 0 || geometry.h == 0 {
             return Err(fail("invalid_screenshot", "Empty screenshot geometry"));
         }
         Ok(Self {
             geometry,
-            image_width: image.width(),
-            image_height: image.height(),
+            image_width: size.width as u32,
+            image_height: size.height as u32,
         })
     }
 
