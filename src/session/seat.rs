@@ -246,7 +246,7 @@ impl VirtualSeat {
         args: &[&str],
         env: &BTreeMap<String, String>,
     ) -> Result<(), BackendError> {
-        let resolved = if path_has(program) {
+        let resolved = if which::which(program).is_ok() {
             program.into()
         } else {
             format!("/usr/libexec/{program}")
@@ -321,11 +321,6 @@ fn check_socket_available(runtime: &std::path::Path, display: &str) -> Result<()
         }
     }
     Ok(())
-}
-
-fn path_has(program: &str) -> bool {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .any(|dir| dir.join(program).is_file())
 }
 
 async fn wait_name(connection: &zbus::Connection, name: &str) -> Result<(), BackendError> {
