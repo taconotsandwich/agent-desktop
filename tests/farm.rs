@@ -11,6 +11,10 @@ mod interaction;
 #[path = "desktop/support/mcp.rs"]
 mod mcp;
 
+#[path = "support/binary.rs"]
+mod binary;
+use binary::server_bin;
+
 struct Farm {
     directory: tempfile::TempDir,
     owner: String,
@@ -29,7 +33,7 @@ impl Farm {
     }
 
     async fn command(&self, args: &[&str]) -> Result<Output> {
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-desktop"));
+        let mut command = tokio::process::Command::new(server_bin());
         command
             .args(args)
             .env("XDG_RUNTIME_DIR", self.directory.path())
@@ -58,7 +62,7 @@ impl Farm {
 
 impl Drop for Farm {
     fn drop(&mut self) {
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_agent-desktop"))
+        let _ = std::process::Command::new(server_bin())
             .args(["farm", "down"])
             .env("XDG_RUNTIME_DIR", self.directory.path())
             .output();
@@ -158,7 +162,7 @@ async fn failed_compositor_startup_returns_failure_and_cleans_helpers() -> Resul
 
 #[test]
 fn cli_reports_package_version() -> Result<()> {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-desktop"))
+    let output = std::process::Command::new(server_bin())
         .arg("--version")
         .output()?;
     ensure!(output.status.success());
@@ -182,8 +186,9 @@ async fn farm_servers_capture_blender_without_qa_permission_setup() -> Result<()
     let status = farm.json(&["farm", "up", "-n", "2"]).await?;
     let relocated = farm.directory.path().join("server path/agent-desktop");
     std::fs::create_dir_all(relocated.parent().context("server directory")?)?;
-    std::fs::copy(env!("CARGO_BIN_EXE_agent-desktop"), &relocated)?;
+    std::fs::copy(server_bin(), &relocated)?;
     let mut pids = Vec::new();
+    let original = server_bin();
     for (index, seat) in status["seats"]
         .as_array()
         .context("farm seats")?
@@ -191,11 +196,7 @@ async fn farm_servers_capture_blender_without_qa_permission_setup() -> Result<()
         .enumerate()
     {
         let mut client = mcp::Joiner::spawn(
-            if index == 0 {
-                std::path::Path::new(env!("CARGO_BIN_EXE_agent-desktop"))
-            } else {
-                &relocated
-            },
+            if index == 0 { &original } else { &relocated },
             seat["env_file"].as_str().context("seat environment")?,
             &artifacts.join(format!("seat-{index}.log")),
         )

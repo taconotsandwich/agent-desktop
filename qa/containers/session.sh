@@ -26,6 +26,9 @@ if [[ "$QA_DESKTOP" == KDE && "$QA_PROTOCOL" == wayland ]] && ! compgen -G "/dev
 fi
 export XDG_SESSION_TYPE="${QA_PROTOCOL:?}"
 export XDG_CURRENT_DESKTOP="${QA_DESKTOP:?}"
+if [[ "$QA_DESKTOP" == KDE && "$QA_PROTOCOL" == wayland ]]; then
+    export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast
+fi
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" /artifacts
 ls -la /dev/dri > /artifacts/dev-dri.txt 2>&1 || true
 printf 'MESA_LOADER_DRIVER_OVERRIDE=%s\nLD_PRELOAD=%s\n' "${MESA_LOADER_DRIVER_OVERRIDE:-}" "${LD_PRELOAD:-}" > /artifacts/software-gl.txt
@@ -49,6 +52,15 @@ read -r DBUS_SYSTEM_BUS_ADDRESS < "$XDG_RUNTIME_DIR/system-bus.address"
 dbus-update-activation-environment XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_SESSION_TYPE XDG_CURRENT_DESKTOP DBUS_SYSTEM_BUS_ADDRESS
 export AGENT_DESKTOP_QA_ARTIFACTS=/artifacts
 rpm -qa > /artifacts/packages.txt
+if [[ -n ${QA_PACKAGES_DIR:-} ]]; then
+    package_prefix="$XDG_RUNTIME_DIR/npm"
+    npm install --prefix "$package_prefix" --ignore-scripts --no-audit --no-fund "$QA_PACKAGES_DIR"/*.tgz > /artifacts/npm-install.log 2>&1
+    package_launcher="$package_prefix/node_modules/.bin/agent-desktop"
+    "$package_launcher" setup > /artifacts/npm-setup.log 2>&1
+    package_version=$(node -p 'require(process.argv[1]).version' "$package_prefix/node_modules/@taconotsandwich/agent-desktop/package.json")
+    export AGENT_DESKTOP_QA_BIN="$XDG_DATA_HOME/agent-desktop/versions/$package_version/agent-desktop"
+    "$AGENT_DESKTOP_QA_BIN" --version > /artifacts/npm-version.txt
+fi
 if [[ ${QA_SUITE:-desktop} == farm ]]; then
     cargo test --locked --test farm -- --ignored --nocapture --test-threads=1
     exit
@@ -87,7 +99,9 @@ SESSION
     else
         export DISPLAY=:0
         mkdir -p "$XDG_DATA_HOME/gnome-shell/extensions"
-        cp -a /work/packaging/gnome/agent-desktop@local "$XDG_DATA_HOME/gnome-shell/extensions/"
+        if [[ -z ${QA_PACKAGES_DIR:-} ]]; then
+            cp -a /work/packaging/gnome/agent-desktop@local "$XDG_DATA_HOME/gnome-shell/extensions/"
+        fi
         gsettings set org.gnome.shell enabled-extensions "['agent-desktop@local']"
         gnome-shell --headless --wayland --wayland-display="$WAYLAND_DISPLAY" --virtual-monitor=1800x1125 > /artifacts/compositor.log 2>&1 &
     fi

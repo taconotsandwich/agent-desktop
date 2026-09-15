@@ -145,6 +145,37 @@ impl Joiner {
         Ok((image.width(), image.height()))
     }
     pub async fn close(mut self) -> Result<()> {
+        let owned = agent_desktop::session::process::ProcessIdentity::with_environment(
+            "AGENT_DESKTOP_QA_OWNER",
+            &self.ownership,
+        );
+        let applications: Vec<_> = owned
+            .into_iter()
+            .filter(|process| process.pid != self.identity.pid)
+            .collect();
+        for process in &applications {
+            process.signal_process(libc::SIGKILL);
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = tokio::time::timeout_at(deadline, self.json("await agentdesktop.getState();"))
+                .await
+                .context("timed out checking test-owned windows during cleanup")??;
+            let windows = state["windows"].as_array().context("desktop windows")?;
+            let visible = windows.iter().any(|window| {
+                applications
+                    .iter()
+                    .any(|process| window["pid"] == process.pid)
+            });
+            if !visible && applications.iter().all(|process| !process.alive()) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "test-owned application windows remained after cleanup: {windows:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         drop(self.stdin.take());
         tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await??;
         Ok(())

@@ -1,4 +1,4 @@
-use super::{Farm, blender, mcp};
+use super::{Farm, blender, mcp, server_bin};
 use anyhow::{Context, Result, ensure};
 use std::{
     path::{Path, PathBuf},
@@ -53,12 +53,7 @@ async fn exercise(
         applications.join("org.kde.konsole.desktop"),
         "[Desktop Entry]\nType=Application\nName=Konsole\nExec=konsole --separate --platform wayland\n",
     )?;
-    let mut client = mcp::Joiner::spawn(
-        Path::new(env!("CARGO_BIN_EXE_agent-desktop")),
-        env,
-        &artifacts.join("server.log"),
-    )
-    .await?;
+    let mut client = mcp::Joiner::spawn(&server_bin(), env, &artifacts.join("server.log")).await?;
     let desktop = client.json("await agentdesktop.getState();").await?;
     ensure!(
         desktop["capabilities"]["input"] == "kwin-eis",

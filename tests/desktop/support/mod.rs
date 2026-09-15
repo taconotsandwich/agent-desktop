@@ -1,7 +1,10 @@
 pub mod blender;
 use agent_desktop::session::seat::{SeatParams, VirtualSeat};
 use std::{collections::BTreeMap, path::PathBuf};
+#[path = "../../support/binary.rs"]
+mod binary;
 pub mod mcp;
+pub use binary::server_bin;
 
 pub struct Seat {
     pub owned: Option<VirtualSeat>,
@@ -63,19 +66,5 @@ impl Drop for Seat {
                 }
             }
         }
-    }
-}
-
-pub fn server_bin() -> PathBuf {
-    let built = PathBuf::from(env!("CARGO_BIN_EXE_agent-desktop"));
-    if let Ok(path) = std::env::var("AGENT_DESKTOP_QA_BIN") {
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            std::fs::read(&built).unwrap(),
-            "QA override must match the built binary"
-        );
-        PathBuf::from(path)
-    } else {
-        built
     }
 }

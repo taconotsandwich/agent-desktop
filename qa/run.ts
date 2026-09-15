@@ -45,6 +45,9 @@ try {
     filter: (source) =>
       ![".git", "target", ".DS_Store"].includes(basename(source)),
   });
+  if (process.env.QA_PACKAGES_DIR) {
+    await cp(resolve(process.env.QA_PACKAGES_DIR), join(staged, "qa/npm-packages"), { recursive: true });
+  }
   const inspection = Bun.spawn(["podman", "image", "inspect", image], {
     stdout: "pipe",
     stderr: "inherit",
@@ -97,6 +100,7 @@ try {
     imageId,
     "/work/qa/containers/session.sh",
   ];
+  if (process.env.QA_PACKAGES_DIR) args.splice(2, 0, "-e", "QA_PACKAGES_DIR=/work/qa/npm-packages");
   if (process.env.QA_RENDER_DEVICE) {
     args.splice(2, 0, "--device", process.env.QA_RENDER_DEVICE, "--group-add", "keep-groups");
   }

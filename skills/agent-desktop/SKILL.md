@@ -101,6 +101,7 @@ Inspect the returned health and `env_file` for each seat. Start a separate MCP s
 
 - Run `agent-desktop doctor` in the same session environment as the failing server. Check its native dependency, bus, and desktop integration findings before retrying.
 - KDE screenshot authorization is tied to the executable's absolute path. Use setup's stable installed executable instead of registering an npx cache path manually.
+- KWin virtual screenshots can require a DRM render device even with CPU rendering. On a device-free host, QPainter fallback can cancel screenshots; inspect the compositor renderer before treating this as an npm installation failure.
 - GNOME automation requires the supplied Shell extension, currently targeting GNOME Shell 49. Setup installs `agent-desktop@local`; log out and back in when instructed, then enable it with `gnome-extensions enable agent-desktop@local` in the user's session.
 - Empty accessibility results can be app-specific. Observe a screenshot and check the app's accessibility support before concluding the desktop connection is broken.
 - Treat permission failures as a configuration problem; do not keep replaying input or approve desktop permission dialogs on the user's behalf.

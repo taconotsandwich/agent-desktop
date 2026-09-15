@@ -35,6 +35,7 @@ jobs:
             protocol: wayland
             render_device: /dev/dri
     env:
+      QA_PACKAGES_DIR: ${{ github.workspace }}/target/npm
       QA_IMAGE: localhost/agent-desktop-qa:fedora43
       QA_ARTIFACTS: ${{ github.workspace }}/target/qa/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}-${{ matrix.desktop }}-${{ matrix.protocol }}
     steps:
@@ -45,7 +46,14 @@ jobs:
       - name: Install container runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman crun
+          sudo apt-get install -y podman crun libwayland-dev libxkbcommon-dev dbus-daemon
+      - name: Build npm packages
+        run: bun packaging/npm/build.ts
+      - name: Verify npm and npx installation
+        if: matrix.suite == 'desktop' && matrix.desktop == 'KDE' && matrix.protocol == 'wayland'
+        run: |
+          bun packaging/npm/smoke.ts
+          bun packaging/npm/skill-smoke.ts
       - name: Build QA image with cached layers
         run: podman build --layers -t "$QA_IMAGE" -f qa/containers/Containerfile .
       - name: Provision virtual DRM device
