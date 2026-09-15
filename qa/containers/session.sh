@@ -18,10 +18,14 @@ export XDG_CURRENT_DESKTOP="${QA_DESKTOP:?}"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" /artifacts
 processes=()
 cleanup() {
+    local status=$?
     for pid in "${processes[@]}"; do kill "$pid" 2>/dev/null || true; done
     wait || true
-    cp -a "$XDG_RUNTIME_DIR" /artifacts/session
+    if ! cp -a "$XDG_RUNTIME_DIR" /artifacts/session; then
+        printf '%s\n' 'Session snapshot incomplete: runtime files changed during shutdown' >&2
+    fi
     rm -rf "$XDG_RUNTIME_DIR"
+    return "$status"
 }
 trap cleanup EXIT
 dbus-daemon --session --nofork --print-address=1 > "$XDG_RUNTIME_DIR/system-bus.address" 2> /artifacts/system-bus.log &
