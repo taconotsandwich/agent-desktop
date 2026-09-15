@@ -133,7 +133,19 @@ impl Engine {
         }
         let id = app.id.clone();
         self.state.lock().await.apps.insert(id.clone(), app);
-        let state = self.ax_state(&id, true).await?;
+        // Compositor window lists can flicker between the selection probe and
+        // the first observation (splash teardown, extension refresh). Ride out
+        // a transient empty list instead of reporting the app as closed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let state = loop {
+            match self.ax_state(&id, true).await {
+                Ok(state) => break state,
+                Err(error) if error.code == "app_closed" && Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         Ok(json!({"id":id,"state":state}))
     }
 
