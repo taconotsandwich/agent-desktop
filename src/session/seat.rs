@@ -180,13 +180,29 @@ impl VirtualSeat {
             .await
             .map_err(|error| BackendError::Failed(error.to_string()))?;
         env.insert("AT_SPI_BUS_ADDRESS".into(), address.clone());
-        seat.spawn("at-spi2-registryd", &[], &env)?;
         let accessibility = zbus::connection::Builder::address(address.as_str())
             .map_err(|error| BackendError::Failed(error.to_string()))?
             .build()
             .await
             .map_err(|error| BackendError::Failed(error.to_string()))?;
-        wait_name(&accessibility, "org.a11y.atspi.Registry").await?;
+        let registry = zbus::names::WellKnownName::try_from("org.a11y.atspi.Registry")
+            .expect("static registry name");
+        let dbus = zbus::fdo::DBusProxy::new(&accessibility)
+            .await
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+        // KWin may have activated the registry already. Ask D-Bus for its
+        // single owner instead of tracking a second process that exits.
+        dbus.start_service_by_name(registry.clone(), 0)
+            .await
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+        let pid = dbus
+            .get_connection_unix_process_id(registry.into())
+            .await
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+        seat.processes
+            .push(ProcessIdentity::read(pid as i32).ok_or_else(|| {
+                BackendError::Failed("Accessibility registry exited during startup".into())
+            })?);
         std::fs::write(
             &seat.env_file,
             env.iter()
