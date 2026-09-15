@@ -1,4 +1,11 @@
 use crate::error::BackendError;
+use nix::{
+    sys::{
+        signal::{Signal, kill, killpg},
+        wait::{WaitPidFlag, waitpid},
+    },
+    unistd::Pid,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
@@ -15,51 +22,53 @@ pub struct ProcessIdentity {
 
 impl ProcessIdentity {
     pub fn read(pid: i32) -> Option<Self> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let (_, fields) = stat.rsplit_once(") ")?;
-        if matches!(fields.split_whitespace().next()?, "Z" | "X") {
+        let stat = procfs::process::Process::new(pid).ok()?.stat().ok()?;
+        if matches!(stat.state, 'Z' | 'X') {
             return None;
         }
-        let started = fields.split_whitespace().nth(19)?.parse().ok()?;
-        Some(Self { pid, started })
+        Some(Self {
+            pid,
+            started: stat.starttime,
+        })
     }
     pub fn alive(&self) -> bool {
         Self::read(self.pid).is_some_and(|current| current.started == self.started)
     }
     pub fn signal(&self, signal: i32) {
-        if self.alive() {
-            unsafe {
-                libc::kill(-self.pid, signal);
-            }
+        if self.alive()
+            && let Ok(signal) = Signal::try_from(signal)
+        {
+            let _ = killpg(Pid::from_raw(self.pid), signal);
         }
     }
     pub fn signal_process(&self, signal: i32) {
-        if self.alive() {
-            unsafe {
-                libc::kill(self.pid, signal);
-            }
+        if self.alive()
+            && let Ok(signal) = Signal::try_from(signal)
+        {
+            let _ = kill(Pid::from_raw(self.pid), signal);
         }
     }
 
     pub fn with_environment(key: &str, value: &str) -> Vec<Self> {
-        let expected = format!("{key}={value}");
-        let Ok(entries) = std::fs::read_dir("/proc") else {
+        let Ok(processes) = procfs::process::all_processes() else {
             return vec![];
         };
-        entries
+        processes
             .flatten()
-            .filter_map(|entry| {
-                let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
+            .filter_map(|process| {
+                let pid = process.pid();
                 if pid == std::process::id() as i32 {
                     return None;
                 }
                 let identity = Self::read(pid)?;
-                let environment = std::fs::read(entry.path().join("environ")).ok()?;
-                (environment
-                    .split(|byte| *byte == 0)
-                    .any(|entry| entry == expected.as_bytes())
-                    && identity.alive())
-                .then_some(identity)
+                let environment = process.environ().ok()?;
+                let matches = environment
+                    .iter()
+                    .any(|(environment_key, environment_value)| {
+                        environment_key.to_string_lossy() == key
+                            && environment_value.to_string_lossy() == value
+                    });
+                (matches && identity.alive()).then_some(identity)
             })
             .collect()
     }
@@ -91,9 +100,7 @@ pub fn terminate_owned(processes: &[ProcessIdentity], runtime: &str) {
         process.signal_process(libc::SIGKILL);
     }
     for process in processes.iter().chain(&members) {
-        unsafe {
-            libc::waitpid(process.pid, std::ptr::null_mut(), libc::WNOHANG);
-        }
+        let _ = waitpid(Pid::from_raw(process.pid), Some(WaitPidFlag::WNOHANG));
     }
 }
 
@@ -115,13 +122,9 @@ impl FileLock {
                 path: path.display().to_string(),
                 error: error.to_string(),
             })?;
-        use std::os::fd::AsRawFd;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(BackendError::Failed(format!(
-                "Another controller owns {}",
-                path.display()
-            )));
-        }
+        fs4::FileExt::try_lock(&file).map_err(|_| {
+            BackendError::Failed(format!("Another controller owns {}", path.display()))
+        })?;
         Ok(Self { _file: file })
     }
 }
