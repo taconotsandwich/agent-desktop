@@ -47,11 +47,12 @@ This document defines the repository git workflow for `agent-desktop`.
   use with their exact name and email. Agents must not invent a sign-off or
   infer approval from the configured Git identity.
 - If an AI tool, coding agent, or LLM substantially assisted with
-  implementation, review, or testing, add this trailer at the end of the
-  commit message:
+  implementation, review, or testing, add this trailer immediately before
+  the sign-off trailer:
   - `Assisted-by: <tool>; model=<provider>/<model>`
 - `Assisted-by` records AI assistance and does not replace the required
   human `Signed-off-by` trailer.
+- Trailer order is `Assisted-by` first, `Signed-off-by` last.
 - Do not commit generated build outputs from `target/`, compiled binaries,
   local editor files, temporary seat state, or QA artifacts such as
   screenshots, logs, and saved test documents.
