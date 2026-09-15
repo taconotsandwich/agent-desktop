@@ -1,4 +1,5 @@
 mod serve;
+mod setup;
 use agent_desktop::{
     platform::drivers::{Desktop, SessionType},
     session::{environment::join_seat, farm, seat::VirtualSeat},
@@ -32,6 +33,16 @@ struct Cli {
 }
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Install a stable executable and desktop integrations for this user.
+    Setup {
+        #[arg(long)]
+        bin_dir: Option<std::path::PathBuf>,
+    },
+    /// Inspect installation and native desktop prerequisites without changing them.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
     Farm {
         #[command(subcommand)]
         action: FarmAction,
@@ -57,6 +68,11 @@ pub fn run() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    match &cli.command {
+        Some(Command::Setup { bin_dir }) => return setup::setup(bin_dir.clone()),
+        Some(Command::Doctor { json }) => return setup::doctor(*json, cli.mode == Mode::Virtual),
+        _ => {}
+    }
     if cli.mode == Mode::Virtual && cli.join_seat.is_none() {
         anyhow::ensure!(
             cli.session

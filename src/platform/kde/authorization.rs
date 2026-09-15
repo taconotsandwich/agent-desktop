@@ -23,7 +23,7 @@ pub async fn authorize_private_session() -> Result<(), BackendError> {
         return Ok(());
     }
     let executable = std::fs::canonicalize(std::env::current_exe().map_err(io)?).map_err(io)?;
-    register(&data, &executable)?;
+    register_application(&data, &executable)?;
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::new("kbuildsycoca6")
@@ -54,7 +54,19 @@ fn private_directory(runtime: &Path, data: &Path) -> Result<Option<PathBuf>, Bac
     Ok((data != runtime && data.starts_with(runtime)).then_some(data))
 }
 
-fn register(data: &Path, executable: &Path) -> Result<(), BackendError> {
+pub fn register_application(data: &Path, executable: &Path) -> Result<(), BackendError> {
+    let contents = application_entry(executable)?;
+    let directory = data.join("applications");
+    std::fs::create_dir_all(&directory).map_err(io)?;
+    let mut entry = tempfile::NamedTempFile::new_in(&directory).map_err(io)?;
+    entry.write_all(contents.as_bytes()).map_err(io)?;
+    entry
+        .persist(directory.join("agent-desktop.desktop"))
+        .map_err(|error| io(error.error))?;
+    Ok(())
+}
+
+pub fn application_entry(executable: &Path) -> Result<String, BackendError> {
     let path = executable
         .to_str()
         .ok_or_else(|| BackendError::Unsupported {
@@ -68,9 +80,7 @@ fn register(data: &Path, executable: &Path) -> Result<(), BackendError> {
             .replace('$', "\\$")
             .replace('%', "%%")
     );
-    let directory = data.join("applications");
-    std::fs::create_dir_all(&directory).map_err(io)?;
-    let mut entry = tempfile::NamedTempFile::new_in(&directory).map_err(io)?;
+    let mut entry = String::new();
     for line in include_str!("../../../packaging/agent-desktop.desktop").lines() {
         let line = if line.starts_with("Exec=") {
             format!("Exec={}", desktop_string(&command))
@@ -79,12 +89,10 @@ fn register(data: &Path, executable: &Path) -> Result<(), BackendError> {
         } else {
             line.into()
         };
-        writeln!(entry, "{line}").map_err(io)?;
+        entry.push_str(&line);
+        entry.push('\n');
     }
-    entry
-        .persist(directory.join("agent-desktop.desktop"))
-        .map_err(|error| io(error.error))?;
-    Ok(())
+    Ok(entry)
 }
 
 fn desktop_string(value: &str) -> String {

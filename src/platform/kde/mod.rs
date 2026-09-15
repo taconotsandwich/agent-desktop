@@ -2,7 +2,7 @@ mod authorization;
 mod connector;
 mod screenshot;
 mod windows;
-pub use authorization::authorize_private_session;
+pub use authorization::{application_entry, authorize_private_session, register_application};
 pub use connector::KwinConnector;
 pub use screenshot::KwinShot;
 pub use windows::KwinWindows;
