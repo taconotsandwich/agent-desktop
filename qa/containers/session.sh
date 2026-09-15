@@ -30,6 +30,12 @@ for attempt in {1..100}; do [[ -s "$XDG_RUNTIME_DIR/system-bus.address" ]] && br
 export DBUS_SYSTEM_BUS_ADDRESS
 read -r DBUS_SYSTEM_BUS_ADDRESS < "$XDG_RUNTIME_DIR/system-bus.address"
 dbus-update-activation-environment XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_SESSION_TYPE XDG_CURRENT_DESKTOP DBUS_SYSTEM_BUS_ADDRESS
+export AGENT_DESKTOP_QA_ARTIFACTS=/artifacts
+rpm -qa > /artifacts/packages.txt
+if [[ ${QA_SUITE:-desktop} == farm ]]; then
+    cargo test --locked --test farm -- --ignored --nocapture --test-threads=1
+    exit
+fi
 /usr/libexec/at-spi-bus-launcher --launch-immediately --a11y=1 --screen-reader=1 > /artifacts/atspi-bus.log 2>&1 &
 processes+=("$!")
 for attempt in {1..100}; do
@@ -118,6 +124,4 @@ for key in DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS AT_SPI_BUS_ADDRESS X
     [[ -v "$key" ]] && printf '%s=%s\n' "$key" "${!key}" >> "$AGENT_DESKTOP_QA_SESSION"
 done
 if [[ -f "$XDG_RUNTIME_DIR/xwayland.env" ]]; then cat "$XDG_RUNTIME_DIR/xwayland.env" >> "$AGENT_DESKTOP_QA_SESSION"; fi
-export AGENT_DESKTOP_QA_ARTIFACTS=/artifacts
-rpm -qa > /artifacts/packages.txt
 cargo test --locked --test desktop -- --ignored --nocapture --test-threads=1

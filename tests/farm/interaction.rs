@@ -1,13 +1,17 @@
 use super::{Farm, blender, mcp};
 use anyhow::{Context, Result, ensure};
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 #[tokio::test]
 #[ignore = "requires host KWin, D-Bus, AT-SPI, Konsole, and Blender"]
 async fn parallel_seats_deliver_input_and_observe_independent_results() -> Result<()> {
     let farm = Farm::new()?;
-    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/qa")
+    let artifacts = std::env::var_os("AGENT_DESKTOP_QA_ARTIFACTS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/qa"))
         .join(format!("farm-interaction-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&artifacts)?;
     eprintln!("QA artifacts: {}", artifacts.display());

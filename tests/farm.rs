@@ -173,8 +173,9 @@ fn cli_reports_package_version() -> Result<()> {
 #[ignore = "requires host KWin, D-Bus, AT-SPI, and Blender"]
 async fn farm_servers_capture_blender_without_qa_permission_setup() -> Result<()> {
     let farm = Farm::new()?;
-    let artifacts = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/qa")
+    let artifacts = std::env::var_os("AGENT_DESKTOP_QA_ARTIFACTS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/qa"))
         .join(format!("farm-screenshots-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&artifacts)?;
     eprintln!("QA artifacts: {}", artifacts.display());

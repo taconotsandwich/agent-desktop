@@ -13,7 +13,7 @@ RUN dnf install -y unzip \
     && blender --version \
     && dnf clean all
 RUN setcap -r /usr/bin/kwin_wayland && install -d -m 1777 /tmp/.X11-unix
-RUN dnf install -y xmodmap && dnf clean all
+RUN dnf install -y xmodmap konsole && dnf clean all
 COPY qa/containers/session.sh /usr/local/bin/agent-desktop-qa-session
 RUN chmod 755 /usr/local/bin/agent-desktop-qa-session
 USER qa
