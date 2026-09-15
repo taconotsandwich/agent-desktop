@@ -38,10 +38,17 @@ base64         = "0.22"
 async-trait    = "0.1"
 libc           = "0.2"
 
+which          = "8"
+imagesize      = "0.15"
+fs4            = "1.1"
+procfs         = "0.18"
+freedesktop-desktop-entry = "0.8"
+
 atspi          = { version = "=0.30", features = ["tokio"] }
 reis           = { version = "=0.6.1", features = ["tokio"] }
 image          = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-nix            = { version = "0.31", default-features = false, features = ["fs"] }
+nix            = { version = "0.31", default-features = false, features = ["fs", "signal", "process", "time"] }
+x11rb          = { version = "0.14", features = ["xtest"] }
 tempfile       = "3.10"
 futures-util   = "0.3"
 rquickjs       = "=0.12.0"
