@@ -97,6 +97,9 @@ try {
     imageId,
     "/work/qa/containers/session.sh",
   ];
+  if (process.env.QA_RENDER_DEVICE) {
+    args.splice(2, 0, "--device", process.env.QA_RENDER_DEVICE, "--group-add", "keep-groups");
+  }
   // Glycin's nested bwrap sandbox needs this on SELinux hosts.
   if (desktop === "GNOME") args.splice(2, 0, "--security-opt", "label=disable");
   if (interrupted) throw new Error("QA interrupted before container startup");

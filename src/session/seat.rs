@@ -77,12 +77,6 @@ impl VirtualSeat {
             ),
             ("QT_LINUX_ACCESSIBILITY_ALWAYS_ON".into(), "1".into()),
             ("GTK_A11Y".into(), "atspi".into()),
-            // KWin's virtual backend only offers OpenGL compositing when it
-            // finds a DRM device; the software stack keeps that path working
-            // on hosts without a GPU. Matches qa/containers/session.sh.
-            ("LIBGL_ALWAYS_SOFTWARE".into(), "1".into()),
-            ("GALLIUM_DRIVER".into(), "llvmpipe".into()),
-            ("MESA_LOADER_DRIVER_OVERRIDE".into(), "kms_swrast".into()),
         ]);
         for dir in ["config", "cache", "data"] {
             std::fs::create_dir_all(seat.seat_runtime.join(dir)).map_err(io)?;
