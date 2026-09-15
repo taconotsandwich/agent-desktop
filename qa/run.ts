@@ -98,16 +98,6 @@ try {
   ];
   // Glycin's nested bwrap sandbox needs this on SELinux hosts.
   if (desktop === "GNOME") args.splice(2, 0, "--security-opt", "label=disable");
-  if (desktop === "KDE" && protocol === "wayland") {
-    args.splice(
-      2,
-      0,
-      "--device",
-      process.env.QA_RENDER_DEVICE ?? "/dev/dri/renderD128",
-      "--group-add",
-      "keep-groups",
-    );
-  }
   if (interrupted) throw new Error("QA interrupted before container startup");
   console.log(`Running ${row}; artifacts: ${artifacts}`);
   const log = await open(join(artifacts, "run.log"), "w");

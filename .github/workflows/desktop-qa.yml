@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   desktop:
-    runs-on: [self-hosted, Linux, X64, agent-desktop-qa]
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -41,6 +41,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
+      - name: Install container runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman crun
       - name: Build QA image with cached layers
         run: podman build --layers -t "$QA_IMAGE" -f qa/containers/Containerfile .
       - name: Run isolated suite
