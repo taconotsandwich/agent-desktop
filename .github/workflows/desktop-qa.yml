@@ -50,7 +50,7 @@ jobs:
         if: matrix.render_device != ''
         run: |
           sudo apt-get install -y "linux-modules-extra-$(uname -r)"
-          sudo modprobe vgem
+          sudo modprobe vkms
           for attempt in {1..60}; do compgen -G "/dev/dri/card*" > /dev/null && break; sleep 0.25; done
           compgen -G "/dev/dri/card*" > /dev/null
           sudo chmod 0666 /dev/dri/card* /dev/dri/renderD* 2>/dev/null || true
