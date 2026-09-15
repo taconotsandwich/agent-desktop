@@ -1,4 +1,5 @@
-use crate::desktop::{Engine, Request};
+use crate::desktop::Engine;
+use crate::request::Request;
 use base64::Engine as _;
 use rquickjs::{Context, Function, Runtime, Value};
 use serde_json::Value as Json;
@@ -267,7 +268,8 @@ impl Session {
 mod tests {
     use super::*;
     use crate::{
-        desktop::accessibility::AtspiConnection, platform::drivers::SessionType,
+        desktop::{Engine, accessibility::AtspiConnection},
+        platform::drivers::SessionType,
         platform::registry::Registry,
     };
     #[tokio::test]

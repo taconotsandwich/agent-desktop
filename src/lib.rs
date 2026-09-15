@@ -2,6 +2,7 @@ pub mod desktop;
 pub mod error;
 pub mod mcp;
 pub mod platform;
+pub mod request;
 pub mod runtime;
 pub mod session;
 pub mod types;

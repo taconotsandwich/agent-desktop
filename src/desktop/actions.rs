@@ -1,4 +1,5 @@
-use super::{Engine, Request, string, target};
+use super::Engine;
+use crate::request::{Operation, Request};
 use crate::{
     desktop::accessibility as a11y, error::fail, platform::drivers::Button, types::ToolError,
 };
@@ -7,21 +8,15 @@ use serde_json::{Value, json};
 impl Engine {
     pub(super) async fn perform(&self, request: Request) -> Result<Value, ToolError> {
         let _guard = self.mutation.lock().await;
-        let id = target(&request)?;
-        let args = &request.args;
-        let result = match request.method.as_str() {
-            "click" => {
-                let count = args["clickCount"].as_u64().unwrap_or(1);
+        let id = request.target()?;
+        let result = match &request.operation {
+            Operation::Click(args) => {
+                let count = args.click_count;
                 if !(1..=3).contains(&count) {
                     return Err(fail("invalid_argument", "clickCount must be 1..3"));
                 }
-                let button = match args["mouseButton"].as_str().unwrap_or("left") {
-                    "left" | "l" => Button::Left,
-                    "right" | "r" => Button::Right,
-                    "middle" | "m" => Button::Middle,
-                    _ => return Err(fail("invalid_argument", "Unknown mouseButton")),
-                };
-                if let Some(index) = args["target"].as_u64() {
+                let button = args.mouse_button;
+                if let Some(index) = args.target.element() {
                     let element = self.element(id, index).await?;
                     if button == Button::Left && count == 1 {
                         match a11y::target::action(&self.atspi, &element, None).await {
@@ -56,26 +51,26 @@ impl Engine {
                     Ok(())
                 } else {
                     self.focus(id).await?;
-                    let (x, y) = self.point(id, &args["target"]).await?;
+                    let (x, y) = self.point(id, &args.target).await?;
                     self.position_pointer(id, x, y).await?;
-                    self.point(id, &args["target"]).await?;
+                    self.point(id, &args.target).await?;
                     for _ in 0..count {
                         self.registry.input()?.click(x, y, button, vec![]).await?;
                     }
                     Ok(())
                 }
             }
-            "drag" => {
+            Operation::Drag { from, to } => {
                 self.focus(id).await?;
-                let from = self.point(id, &args["from"]).await?;
-                let to = self.point(id, &args["to"]).await?;
-                self.position_pointer(id, from.0, from.1).await?;
-                self.point(id, &args["from"]).await?;
+                let start = self.point(id, from).await?;
+                let end = self.point(id, to).await?;
+                self.position_pointer(id, start.0, start.1).await?;
+                self.point(id, from).await?;
                 let path = (0..=24)
                     .map(|step| {
                         (
-                            from.0 + (to.0 - from.0) * step / 24,
-                            from.1 + (to.1 - from.1) * step / 24,
+                            start.0 + (end.0 - start.0) * step / 24,
+                            start.1 + (end.1 - start.1) * step / 24,
                         )
                     })
                     .collect();
@@ -84,9 +79,9 @@ impl Engine {
                     .drag(path, Button::Left, 300, 15)
                     .await
             }
-            "scroll" => {
+            Operation::Scroll(args) => {
                 self.focus(id).await?;
-                let (x, y) = if let Some(index) = args["target"].as_u64() {
+                let (x, y) = if let Some(index) = args.target.element() {
                     let element = self.element(id, index).await?;
                     let bbox = element
                         .bbox
@@ -96,9 +91,9 @@ impl Engine {
                         })?;
                     (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
                 } else {
-                    self.point(id, &args["target"]).await?
+                    self.point(id, &args.target).await?
                 };
-                let pages = args["pages"].as_f64().unwrap_or(1.0);
+                let pages = args.pages;
                 if !pages.is_finite() || pages <= 0.0 || pages > 20.0 {
                     return Err(fail(
                         "invalid_argument",
@@ -106,10 +101,7 @@ impl Engine {
                     ));
                 }
                 let window = self.window(id).await?;
-                let horizontal = matches!(
-                    args["direction"].as_str(),
-                    Some("left" | "right" | "l" | "r")
-                );
+                let horizontal = args.direction.horizontal();
                 let amount = (pages
                     * if horizontal {
                         window.geometry.w
@@ -117,25 +109,20 @@ impl Engine {
                         window.geometry.h
                     } as f64)
                     .round() as i32;
-                let (dx, dy) = match string(args, "direction")? {
-                    "up" | "u" => (0, -amount),
-                    "down" | "d" => (0, amount),
-                    "left" | "l" => (-amount, 0),
-                    "right" | "r" => (amount, 0),
-                    _ => return Err(fail("invalid_argument", "Unknown scroll direction")),
-                };
+                let (dx, dy) = args.direction.delta(amount as f64);
                 self.focus(id).await?;
                 self.position_pointer(id, x, y).await?;
-                self.registry.input()?.scroll(x, y, dx, dy, vec![]).await
+                self.registry
+                    .input()?
+                    .scroll(x, y, dx as i32, dy as i32, vec![])
+                    .await
             }
-            "pressKey" => {
-                let key = string(args, "key")?;
+            Operation::PressKey { key } => {
                 crate::platform::keymap::parse_chord(key).map_err(|error| error.tool(false))?;
                 self.focus(id).await?;
-                self.registry.input()?.key(vec![key.into()]).await
+                self.registry.input()?.key(vec![key.clone()]).await
             }
-            "typeText" => {
-                let text = string(args, "text")?;
+            Operation::TypeText { text } => {
                 if text.len() > 100_000 {
                     return Err(fail("invalid_argument", "Text exceeds 100000 bytes"));
                 }
@@ -143,53 +130,49 @@ impl Engine {
                     return Ok(Value::Null);
                 }
                 self.focus(id).await?;
-                match self.registry.input()?.type_text(text.into()).await {
+                match self.registry.input()?.type_text(text.clone()).await {
                     Err(error) if error.code == "unsupported" => self.paste(id, text).await,
                     result => result,
                 }
             }
-            "paste" => {
-                let format = args["format"].as_str().unwrap_or("text");
+            Operation::Paste { text, format } => {
                 if format != "text" {
                     return Err(fail(
                         "unsupported",
                         "Native rich clipboard formats are not available",
                     ));
                 }
-                self.paste(id, string(args, "text")?).await
+                self.paste(id, text).await
             }
-            "setValue" => {
-                let index = args["elementIndex"]
-                    .as_u64()
-                    .ok_or_else(|| fail("invalid_argument", "elementIndex is required"))?;
-                let element = self.element(id, index).await?;
-                a11y::target::set_value(&self.atspi, &element, string(args, "value")?).await
+            Operation::SetValue {
+                element_index,
+                value,
+            } => {
+                let element = self.element(id, *element_index).await?;
+                a11y::target::set_value(&self.atspi, &element, value).await
             }
-            "selectText" => {
-                let index = args["elementIndex"]
-                    .as_u64()
-                    .ok_or_else(|| fail("invalid_argument", "elementIndex is required"))?;
-                let element = self.element(id, index).await?;
+            Operation::SelectText(args) => {
+                let element = self.element(id, args.element_index).await?;
                 a11y::target::select_text(
                     &self.atspi,
                     &element,
-                    string(args, "text")?,
-                    args["prefix"].as_str().unwrap_or(""),
-                    args["suffix"].as_str().unwrap_or(""),
-                    args["selectionType"].as_str().unwrap_or("text"),
+                    &args.text,
+                    &args.prefix,
+                    &args.suffix,
+                    &args.selection_type,
                 )
                 .await
             }
-            "performSecondaryAction" => {
-                let index = args["elementIndex"]
-                    .as_u64()
-                    .ok_or_else(|| fail("invalid_argument", "elementIndex is required"))?;
-                let element = self.element(id, index).await?;
-                a11y::target::action(&self.atspi, &element, Some(string(args, "action")?)).await
+            Operation::PerformSecondaryAction {
+                element_index,
+                action,
+            } => {
+                let element = self.element(id, *element_index).await?;
+                a11y::target::action(&self.atspi, &element, Some(action)).await
             }
             _ => Err(fail(
                 "unsupported",
-                format!("Unknown operation {}", request.method),
+                "Operation is not supported by a desktop application",
             )),
         };
         self.invalidate(id).await;

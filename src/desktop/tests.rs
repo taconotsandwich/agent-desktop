@@ -79,7 +79,7 @@ async fn observations_authorize_only_the_current_window_and_fresh_indices() {
         .window = Some("another-window".into());
     assert_eq!(
         engine
-            .point("fake.desktop", &json!([10, 10]))
+            .point("fake.desktop", &PointerTarget::Coordinates([10.0, 10.0]))
             .await
             .unwrap_err()
             .code,

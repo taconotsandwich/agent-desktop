@@ -28,11 +28,15 @@ pub struct TrustedText {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Button {
+    #[default]
+    #[serde(alias = "l")]
     Left,
+    #[serde(alias = "r")]
     Right,
+    #[serde(alias = "m")]
     Middle,
 }
 

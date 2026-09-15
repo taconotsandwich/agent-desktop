@@ -12,11 +12,11 @@ use crate::{
     error::fail,
     platform::drivers::{SessionType, ShotTarget, WindowInfo},
     platform::registry::Registry,
+    request::{Operation, PointerTarget, Request},
     types::ToolError,
 };
 use base64::Engine as _;
 use geometry::Frame;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -24,14 +24,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
-
-#[derive(Deserialize)]
-pub struct Request {
-    pub method: String,
-    pub target: Option<String>,
-    #[serde(default)]
-    pub args: Value,
-}
 
 #[derive(Default)]
 struct Observation {
@@ -74,26 +66,18 @@ impl Engine {
     }
 
     pub async fn dispatch(&self, request: Request) -> Result<Value, ToolError> {
-        match request.method.as_str() {
-            "getState" => self.desktop_state().await,
-            "listApps" => Ok(json!(apps::catalog())),
-            "getApp" => self.get_app(string(&request.args, "query")?).await,
-            "getAXState" => {
-                self.ax_state(
-                    target(&request)?,
-                    request.args["disableDiffing"].as_bool().unwrap_or(false),
-                )
-                .await
+        match &request.operation {
+            Operation::GetState {} => self.desktop_state().await,
+            Operation::ListApps {} => Ok(json!(apps::catalog())),
+            Operation::GetApp { query } => self.get_app(query).await,
+            Operation::GetAxState(options) => {
+                self.ax_state(request.target()?, options.disable_diffing)
+                    .await
             }
-            "getScreenshot" => self.screenshot(target(&request)?).await,
-            "getAXStateAndScreenshot" => {
-                let id = target(&request)?;
-                let state = self
-                    .ax_state(
-                        id,
-                        request.args["disableDiffing"].as_bool().unwrap_or(false),
-                    )
-                    .await?;
+            Operation::GetScreenshot {} => self.screenshot(request.target()?).await,
+            Operation::GetAxStateAndScreenshot(options) => {
+                let id = request.target()?;
+                let state = self.ax_state(id, options.disable_diffing).await?;
                 let screenshot = self.screenshot(id).await?;
                 Ok(json!({"state":state,"screenshot":screenshot}))
             }
@@ -343,18 +327,9 @@ impl Engine {
         })
     }
 
-    async fn point(&self, id: &str, value: &Value) -> Result<(i32, i32), ToolError> {
+    async fn point(&self, id: &str, value: &PointerTarget) -> Result<(i32, i32), ToolError> {
         let window = self.window(id).await?;
-        let pair = value
-            .as_array()
-            .filter(|pair| pair.len() == 2)
-            .ok_or_else(|| fail("invalid_argument", "Expected [x,y]"))?;
-        let x = pair[0]
-            .as_f64()
-            .ok_or_else(|| fail("invalid_argument", "x must be numeric"))?;
-        let y = pair[1]
-            .as_f64()
-            .ok_or_else(|| fail("invalid_argument", "y must be numeric"))?;
+        let (x, y) = value.coordinates()?;
         let state = self.state.lock().await;
         let observation = state
             .observations
@@ -408,17 +383,4 @@ impl Engine {
             observation.elements.clear();
         }
     }
-}
-
-fn target(request: &Request) -> Result<&str, ToolError> {
-    request
-        .target
-        .as_deref()
-        .ok_or_else(|| fail("invalid_argument", "Target is required"))
-}
-
-fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, ToolError> {
-    value[key]
-        .as_str()
-        .ok_or_else(|| fail("invalid_argument", format!("{key} must be a string")))
 }
