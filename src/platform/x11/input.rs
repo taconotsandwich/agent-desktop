@@ -1,4 +1,11 @@
-use super::{display, has, run};
+//! X11 input via the XTEST extension (the same mechanism xdotool uses).
+//!
+//! Events are injected into the server's normal input pipeline: they reach
+//! whatever window holds focus, exactly like the previous xdotool driver.
+//! Keyboard names resolve against the server's current keyboard mapping, so
+//! there is no xmodmap subprocess and no US-layout assumption for named keys.
+
+use super::{X11, connection, failed};
 use crate::{
     error::BackendError,
     platform::{
@@ -7,89 +14,208 @@ use crate::{
     },
     types::ToolError,
 };
+use std::sync::Arc;
+use std::time::Duration;
+use x11rb::{
+    connection::Connection as _,
+    protocol::{
+        xproto::{
+            BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ConnectionExt as _, KEY_PRESS_EVENT,
+            KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT,
+        },
+        xtest::ConnectionExt as _,
+    },
+};
+
+const XK_SHIFT_L: u32 = 0xffe1;
+const XK_CONTROL_L: u32 = 0xffe3;
+const XK_ALT_L: u32 = 0xffe9;
+const XK_SUPER_L: u32 = 0xffeb;
 
 pub struct X11Input;
 
-struct ReleaseInput {
-    display: String,
-    keys: Vec<String>,
-    buttons: Vec<String>,
-}
-impl ReleaseInput {
-    fn new(display: &str) -> Self {
-        Self {
-            display: display.into(),
-            keys: vec![],
-            buttons: vec![],
-        }
+fn modifier_keysym(modifier: keymap::Modifier) -> u32 {
+    match modifier {
+        keymap::Modifier::Ctrl => XK_CONTROL_L,
+        keymap::Modifier::Shift => XK_SHIFT_L,
+        keymap::Modifier::Alt => XK_ALT_L,
+        keymap::Modifier::Super => XK_SUPER_L,
     }
 }
-impl Drop for ReleaseInput {
-    fn drop(&mut self) {
-        let mut args = Vec::new();
-        for key in &self.keys {
-            args.extend(["keyup", key.as_str()]);
-        }
-        for button in &self.buttons {
-            args.extend(["mouseup", button.as_str()]);
-        }
-        if args.is_empty() {
-            return;
-        }
-        let Ok(mut child) = std::process::Command::new("xdotool")
-            .args(args)
-            .env("DISPLAY", &self.display)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        else {
-            return;
+
+/// Named keys as X11 keysyms. F-keys are not contiguous in evdev (F11/F12
+/// sit at 87/88), so each maps explicitly.
+fn named_keysym(code: u32) -> Option<u32> {
+    Some(match code {
+        keymap::KEY_ESC => 0xff1b,
+        keymap::KEY_BACKSPACE => 0xff08,
+        keymap::KEY_TAB => 0xff09,
+        keymap::KEY_ENTER => 0xff0d,
+        keymap::KEY_SPACE => 0x0020,
+        keymap::KEY_HOME => 0xff50,
+        keymap::KEY_UP => 0xff52,
+        keymap::KEY_PAGEUP => 0xff55,
+        keymap::KEY_LEFT => 0xff51,
+        keymap::KEY_RIGHT => 0xff53,
+        keymap::KEY_END => 0xff57,
+        keymap::KEY_DOWN => 0xff54,
+        keymap::KEY_PAGEDOWN => 0xff56,
+        keymap::KEY_INSERT => 0xff63,
+        keymap::KEY_DELETE => 0xffff,
+        keymap::KEY_F1 => 0xffbe,
+        keymap::KEY_F2 => 0xffbf,
+        keymap::KEY_F3 => 0xffc0,
+        keymap::KEY_F4 => 0xffc1,
+        keymap::KEY_F5 => 0xffc2,
+        keymap::KEY_F6 => 0xffc3,
+        keymap::KEY_F7 => 0xffc4,
+        keymap::KEY_F8 => 0xffc5,
+        keymap::KEY_F9 => 0xffc6,
+        keymap::KEY_F10 => 0xffc7,
+        keymap::KEY_F11 => 0xffc8,
+        keymap::KEY_F12 => 0xffc9,
+        _ => return None,
+    })
+}
+
+fn chord_keysym(text: &str, chord: &keymap::Chord) -> Option<u32> {
+    let token = text.rsplit('+').next()?.trim();
+    let mut chars = token.chars();
+    match (chars.next(), chars.next()) {
+        (Some(ch), None) if ch.is_ascii() => Some(ch as u32),
+        (Some(_), None) => None,
+        _ => named_keysym(chord.key),
+    }
+}
+
+fn button_code(button: Button) -> u8 {
+    match button {
+        Button::Left => 1,
+        Button::Middle => 2,
+        Button::Right => 3,
+    }
+}
+
+fn fake(x11: &X11, type_: u8, detail: u8, x: i16, y: i16) -> Result<(), BackendError> {
+    x11.connection
+        .xtest_fake_input(type_, detail, x11rb::CURRENT_TIME, x11.root, x, y, 0)
+        .map_err(failed)?;
+    x11.connection.flush().map_err(failed)
+}
+
+struct Keyboard {
+    min_keycode: u8,
+    per_keycode: usize,
+    keysyms: Vec<u32>,
+}
+
+impl Keyboard {
+    fn read(x11: &X11) -> Result<Self, BackendError> {
+        let (min_keycode, max_keycode) = {
+            let setup = x11.connection.setup();
+            (setup.min_keycode, setup.max_keycode)
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        while matches!(child.try_wait(), Ok(None)) {
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        let reply = x11
+            .connection
+            .get_keyboard_mapping(min_keycode, max_keycode - min_keycode + 1)
+            .map_err(failed)?
+            .reply()
+            .map_err(failed)?;
+        Ok(Self {
+            min_keycode,
+            per_keycode: reply.keysyms_per_keycode as usize,
+            keysyms: reply.keysyms,
+        })
+    }
+
+    /// First key position carrying `keysym`, with whether that level needs
+    /// Shift held.
+    fn lookup(&self, keysym: u32) -> Option<(u8, bool)> {
+        self.keysyms
+            .chunks(self.per_keycode.max(1))
+            .enumerate()
+            .find_map(|(index, syms)| {
+                syms.iter()
+                    .position(|sym| *sym == keysym)
+                    .map(|level| ((self.min_keycode as usize + index) as u8, level % 2 == 1))
+            })
+    }
+}
+
+/// Best-effort release of anything still held if a dispatch fails midway.
+struct HeldKeys {
+    x11: Arc<X11>,
+    keys: Vec<u8>,
+    buttons: Vec<u8>,
+}
+
+impl HeldKeys {
+    fn new(x11: &Arc<X11>) -> Self {
+        Self {
+            x11: x11.clone(),
+            keys: Vec::new(),
+            buttons: Vec::new(),
+        }
+    }
+    fn press_key(&mut self, keycode: u8) -> Result<(), BackendError> {
+        self.keys.push(keycode);
+        fake(&self.x11, KEY_PRESS_EVENT, keycode, 0, 0)
+    }
+    fn release_key(&mut self, keycode: u8) -> Result<(), BackendError> {
+        self.keys.retain(|held| *held != keycode);
+        fake(&self.x11, KEY_RELEASE_EVENT, keycode, 0, 0)
+    }
+    fn press_button(&mut self, button: u8) -> Result<(), BackendError> {
+        self.buttons.push(button);
+        fake(&self.x11, BUTTON_PRESS_EVENT, button, 0, 0)
+    }
+    fn release_button(&mut self, button: u8) -> Result<(), BackendError> {
+        self.buttons.retain(|held| *held != button);
+        fake(&self.x11, BUTTON_RELEASE_EVENT, button, 0, 0)
+    }
+}
+
+impl Drop for HeldKeys {
+    fn drop(&mut self) {
+        for button in self.buttons.drain(..).rev() {
+            let _ = fake(&self.x11, BUTTON_RELEASE_EVENT, button, 0, 0);
+        }
+        for key in self.keys.drain(..).rev() {
+            let _ = fake(&self.x11, KEY_RELEASE_EVENT, key, 0, 0);
         }
     }
 }
 
-fn btn_arg(b: Button) -> &'static str {
-    match b {
-        Button::Left => "1",
-        Button::Middle => "2",
-        Button::Right => "3",
-    }
+fn move_pointer(x11: &X11, x: i32, y: i32) -> Result<(), BackendError> {
+    fake(x11, MOTION_NOTIFY_EVENT, 0, x as i16, y as i16)
 }
 
 #[async_trait::async_trait]
 impl InputDriver for X11Input {
     fn id(&self) -> &'static str {
-        "x11-xdotool"
+        "x11-xtest"
     }
+
     async fn probe(&self) -> Probe {
-        match display() {
-            Err(e) => Probe {
-                id: self.id(),
-                ok: false,
-                detail: e.tool(false).message,
-            },
-            Ok(_) if has("xdotool") && has("xmodmap") => Probe {
-                id: self.id(),
-                ok: true,
-                detail: "xdotool and xmodmap on PATH".into(),
-            },
-            Ok(_) => Probe {
-                id: self.id(),
-                ok: false,
-                detail: "xdotool and xmodmap are required".into(),
-            },
+        let result = async {
+            let x11 = connection()?;
+            x11.connection
+                .xtest_get_version(2, 2)
+                .map_err(failed)?
+                .reply()
+                .map_err(failed)?;
+            Ok::<(), BackendError>(())
+        }
+        .await;
+        Probe {
+            id: self.id(),
+            ok: result.is_ok(),
+            detail: result
+                .map(|()| "XTEST extension available".into())
+                .unwrap_or_else(|error| error.to_string()),
         }
     }
+
     async fn click(
         &self,
         x: i32,
@@ -97,70 +223,37 @@ impl InputDriver for X11Input {
         button: Button,
         hold: Vec<keymap::Modifier>,
     ) -> Result<(), ToolError> {
-        let d = display().map_err(|e| e.tool(false))?;
-        // Modifiers via keydown/key around the click (xdotool natively supports this).
-        let mut release = ReleaseInput::new(&d);
-        release.buttons.push(btn_arg(button).into());
-        for m in &hold {
-            let k = match m {
-                keymap::Modifier::Ctrl => "ctrl",
-                keymap::Modifier::Shift => "shift",
-                keymap::Modifier::Alt => "alt",
-                keymap::Modifier::Super => "super",
-            };
-            release.keys.push(k.into());
-            run("mod down", "xdotool", &["keydown", k], &d)
-                .await
-                .map_err(|e| e.tool(true))?;
+        let x11 = connection().map_err(|error| error.tool(false))?;
+        let keyboard = Keyboard::read(&x11).map_err(|error| error.tool(true))?;
+        let mut held = HeldKeys::new(&x11);
+        move_pointer(&x11, x, y).map_err(|error| error.tool(true))?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        for modifier in &hold {
+            let (keycode, _) = keyboard
+                .lookup(modifier_keysym(*modifier))
+                .ok_or_else(|| unknown_key(format!("{modifier:?}")))?;
+            held.press_key(keycode).map_err(|error| error.tool(true))?;
         }
-        let r = run(
-            "click",
-            "xdotool",
-            &[
-                "mousemove",
-                &x.to_string(),
-                &y.to_string(),
-                "sleep",
-                "0.02",
-                "mousedown",
-                btn_arg(button),
-                "sleep",
-                "0.03",
-                "mouseup",
-                btn_arg(button),
-            ],
-            &d,
-        )
-        .await;
-        if r.is_ok() {
-            release.buttons.clear();
-        }
-        for m in hold.iter().rev() {
-            let k = match m {
-                keymap::Modifier::Ctrl => "ctrl",
-                keymap::Modifier::Shift => "shift",
-                keymap::Modifier::Alt => "alt",
-                keymap::Modifier::Super => "super",
-            };
-            run("mod up", "xdotool", &["keyup", k], &d)
-                .await
+        held.press_button(button_code(button))
+            .map_err(|error| error.tool(true))?;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        held.release_button(button_code(button))
+            .map_err(|error| error.tool(true))?;
+        for modifier in hold.iter().rev() {
+            let (keycode, _) = keyboard
+                .lookup(modifier_keysym(*modifier))
+                .ok_or_else(|| unknown_key(format!("{modifier:?}")))?;
+            held.release_key(keycode)
                 .map_err(|error| error.tool(true))?;
-            release.keys.retain(|key| key != k);
         }
-        r.map(|_| ()).map_err(|e| e.tool(true))
+        Ok(())
     }
+
     async fn move_to(&self, x: i32, y: i32) -> Result<(), ToolError> {
-        let d = display().map_err(|e| e.tool(false))?;
-        run(
-            "move",
-            "xdotool",
-            &["mousemove", &x.to_string(), &y.to_string()],
-            &d,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|e| e.tool(true))
+        let x11 = connection().map_err(|error| error.tool(false))?;
+        move_pointer(&x11, x, y).map_err(|error| error.tool(true))
     }
+
     async fn drag(
         &self,
         path: Vec<(i32, i32)>,
@@ -174,42 +267,28 @@ impl InputDriver for X11Input {
             }
             .tool(false)
         })?;
-        let d = display().map_err(|e| e.tool(false))?;
-        // One xdotool invocation: move, press, dwell (xdotool sleep takes
-        // seconds), interpolated moves, release.
-        let mut release = ReleaseInput::new(&d);
-        release.buttons.push(btn_arg(button).into());
-        let mut args: Vec<String> = vec![
-            "mousemove".into(),
-            start.0.to_string(),
-            start.1.to_string(),
-            "mousedown".into(),
-            btn_arg(button).into(),
-            "sleep".into(),
-            format!("{:.2}", dwell_ms as f64 / 1000.0),
-        ];
-        let mut prev = *start;
-        for &(ex, ey) in rest {
-            for i in 1..=10 {
-                let fx = prev.0 + (ex - prev.0) * i / 10;
-                let fy = prev.1 + (ey - prev.1) * i / 10;
-                args.push("mousemove".into());
-                args.push(fx.to_string());
-                args.push(fy.to_string());
-                args.push("sleep".into());
-                args.push(format!("{:.2}", step_ms as f64 / 1000.0));
+        let x11 = connection().map_err(|error| error.tool(false))?;
+        let mut held = HeldKeys::new(&x11);
+        move_pointer(&x11, start.0, start.1).map_err(|error| error.tool(true))?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        held.press_button(button_code(button))
+            .map_err(|error| error.tool(true))?;
+        tokio::time::sleep(Duration::from_millis(dwell_ms)).await;
+        let mut previous = *start;
+        for &(end_x, end_y) in rest {
+            for step in 1..=10 {
+                let x = previous.0 + (end_x - previous.0) * step / 10;
+                let y = previous.1 + (end_y - previous.1) * step / 10;
+                move_pointer(&x11, x, y).map_err(|error| error.tool(true))?;
+                tokio::time::sleep(Duration::from_millis(step_ms)).await;
             }
-            prev = (ex, ey);
+            previous = (end_x, end_y);
         }
-        args.push("mouseup".into());
-        args.push(btn_arg(button).into());
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        run("drag", "xdotool", &arg_refs, &d)
-            .await
-            .map_err(|e| e.tool(true))?;
-        release.buttons.clear();
+        held.release_button(button_code(button))
+            .map_err(|error| error.tool(true))?;
         Ok(())
     }
+
     async fn scroll(
         &self,
         x: i32,
@@ -218,67 +297,72 @@ impl InputDriver for X11Input {
         dy: i32,
         hold: Vec<keymap::Modifier>,
     ) -> Result<(), ToolError> {
-        // xdotool buttons 4/5/6/7 = up/down/left/right; repeat per notch.
-        let d = display().map_err(|e| e.tool(false))?;
-        let key_name = |m: &keymap::Modifier| match m {
-            keymap::Modifier::Ctrl => "ctrl",
-            keymap::Modifier::Shift => "shift",
-            keymap::Modifier::Alt => "alt",
-            keymap::Modifier::Super => "super",
-        };
-        let mut release = ReleaseInput::new(&d);
-        for m in &hold {
-            release.keys.push(key_name(m).into());
-            run("mod down", "xdotool", &["keydown", key_name(m)], &d)
-                .await
-                .map_err(|e| e.tool(true))?;
+        let x11 = connection().map_err(|error| error.tool(false))?;
+        let keyboard = Keyboard::read(&x11).map_err(|error| error.tool(true))?;
+        let mut held = HeldKeys::new(&x11);
+        move_pointer(&x11, x, y).map_err(|error| error.tool(true))?;
+        for modifier in &hold {
+            let (keycode, _) = keyboard
+                .lookup(modifier_keysym(*modifier))
+                .ok_or_else(|| unknown_key(format!("{modifier:?}")))?;
+            held.press_key(keycode).map_err(|error| error.tool(true))?;
         }
-        let r: Result<(), BackendError> = async {
-            run(
-                "move",
-                "xdotool",
-                &["mousemove", &x.to_string(), &y.to_string()],
-                &d,
-            )
-            .await?;
-            for (delta, negative, positive) in [(dx, "6", "7"), (dy, "4", "5")] {
-                if delta == 0 {
-                    continue;
-                }
-                let count = delta.unsigned_abs().div_ceil(120).max(1).to_string();
-                run(
-                    "scroll",
-                    "xdotool",
-                    &[
-                        "click",
-                        "--repeat",
-                        &count,
-                        if delta < 0 { negative } else { positive },
-                    ],
-                    &d,
-                )
-                .await?;
+        // Buttons 4/5/6/7 = up/down/left/right, one click per 120-unit notch.
+        for (delta, negative, positive) in [(dx, 6u8, 7u8), (dy, 4u8, 5u8)] {
+            if delta == 0 {
+                continue;
             }
-            Ok(())
+            let button = if delta < 0 { negative } else { positive };
+            for _ in 0..delta.unsigned_abs().div_ceil(120).max(1) {
+                held.press_button(button)
+                    .map_err(|error| error.tool(true))?;
+                held.release_button(button)
+                    .map_err(|error| error.tool(true))?;
+            }
         }
-        .await;
-        for m in hold.iter().rev() {
-            let _ = run("mod up", "xdotool", &["keyup", key_name(m)], &d).await;
+        for modifier in hold.iter().rev() {
+            let (keycode, _) = keyboard
+                .lookup(modifier_keysym(*modifier))
+                .ok_or_else(|| unknown_key(format!("{modifier:?}")))?;
+            held.release_key(keycode)
+                .map_err(|error| error.tool(true))?;
         }
-        r.map(|_| ()).map_err(|e| e.tool(true))
+        Ok(())
     }
+
     async fn type_text(&self, text: String) -> Result<(), ToolError> {
-        let d = display().map_err(|e| e.tool(false))?;
-        run(
-            "type",
-            "xdotool",
-            &["type", "--delay", "10", "--", &text],
-            &d,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|e| e.tool(true))
+        let x11 = connection().map_err(|error| error.tool(false))?;
+        let keyboard = Keyboard::read(&x11).map_err(|error| error.tool(true))?;
+        let mut held = HeldKeys::new(&x11);
+        let (shift, _) = keyboard
+            .lookup(XK_SHIFT_L)
+            .ok_or_else(|| unknown_key("Shift".into()))?;
+        for ch in text.chars() {
+            if !ch.is_ascii() {
+                return Err(BackendError::Unsupported {
+                    reason: format!("no direct X11 typing for {ch:?}"),
+                }
+                .tool(true));
+            }
+            let keysym = ch as u32;
+            let (keycode, needs_shift) = keyboard
+                .lookup(keysym)
+                .ok_or_else(|| unknown_key(format!("{ch:?}")))?;
+            if needs_shift {
+                held.press_key(shift).map_err(|error| error.tool(true))?;
+            }
+            held.press_key(keycode).map_err(|error| error.tool(true))?;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            held.release_key(keycode)
+                .map_err(|error| error.tool(true))?;
+            if needs_shift {
+                held.release_key(shift).map_err(|error| error.tool(true))?;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        Ok(())
     }
+
     async fn key(&self, keys: Vec<String>) -> Result<(), ToolError> {
         if keys.is_empty() {
             return Err(BackendError::Unsupported {
@@ -286,112 +370,89 @@ impl InputDriver for X11Input {
             }
             .tool(false));
         }
-        let d = display().map_err(|e| e.tool(false))?;
-        let mut keys: Vec<String> = keys
-            .iter()
-            .map(|key| x11_chord(key))
-            .collect::<Result<_, _>>()
-            .map_err(|error| error.tool(false))?;
-        for key in &mut keys {
-            let name = key.rsplit('+').next().unwrap();
-            if name.starts_with('F') && name[1..].parse::<u8>().is_ok_and(|n| (1..=12).contains(&n))
-            {
-                // libxdo can select an Alt mapping for an unmodified function key.
-                // Resolve its level-one keycode without synthesizing extra modifiers.
-                let mapping = run("keyboard mapping", "xmodmap", &["-pke"], &d)
-                    .await
-                    .map_err(|error| error.tool(false))?;
-                let code = unmodified_keycode(&String::from_utf8_lossy(&mapping), name)
-                    .ok_or_else(|| {
-                        crate::error::fail(
-                            "unsupported",
-                            format!("No unmodified X11 mapping for {name}"),
-                        )
-                    })?;
-                let prefix = key.len() - name.len();
-                key.replace_range(prefix.., &code.to_string());
+        let x11 = connection().map_err(|error| error.tool(false))?;
+        let keyboard = Keyboard::read(&x11).map_err(|error| error.tool(true))?;
+        let mut held = HeldKeys::new(&x11);
+        for chord_text in keys {
+            let chord = keymap::parse_chord(&chord_text).map_err(|error| error.tool(false))?;
+            let keysym =
+                chord_keysym(&chord_text, &chord).ok_or_else(|| unknown_key(chord_text.clone()))?;
+            let (keycode, needs_shift) = keyboard
+                .lookup(keysym)
+                .ok_or_else(|| unknown_key(chord_text.clone()))?;
+            let mut modifiers: Vec<u8> = chord
+                .modifiers
+                .iter()
+                .map(|modifier| {
+                    keyboard
+                        .lookup(modifier_keysym(*modifier))
+                        .map(|(keycode, _)| keycode)
+                        .ok_or_else(|| unknown_key(format!("{modifier:?}")))
+                })
+                .collect::<Result<_, _>>()?;
+            if needs_shift && !chord.modifiers.contains(&keymap::Modifier::Shift) {
+                let (shift, _) = keyboard
+                    .lookup(XK_SHIFT_L)
+                    .ok_or_else(|| unknown_key("Shift".into()))?;
+                modifiers.push(shift);
             }
+            for modifier in &modifiers {
+                held.press_key(*modifier)
+                    .map_err(|error| error.tool(true))?;
+            }
+            held.press_key(keycode).map_err(|error| error.tool(true))?;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            held.release_key(keycode)
+                .map_err(|error| error.tool(true))?;
+            for modifier in modifiers.iter().rev() {
+                held.release_key(*modifier)
+                    .map_err(|error| error.tool(true))?;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let mut release = ReleaseInput::new(&d);
-        release.keys = keys
-            .iter()
-            .flat_map(|chord| chord.split('+').map(str::to_owned))
-            .collect();
-        let mut args = vec!["key", "--delay", "40", "--"];
-        args.extend(keys.iter().map(|s| s.as_str()));
-        run("key", "xdotool", &args, &d)
-            .await
-            .map_err(|e| e.tool(true))?;
-        release.keys.clear();
         Ok(())
     }
 }
 
-fn unmodified_keycode(mapping: &str, name: &str) -> Option<u8> {
-    mapping.lines().find_map(|line| {
-        let mut parts = line.split_whitespace();
-        if parts.next()? != "keycode" {
-            return None;
-        }
-        let code = parts.next()?.parse().ok()?;
-        (parts.next()? == "=" && parts.next()? == name).then_some(code)
-    })
+fn unknown_key(detail: String) -> ToolError {
+    BackendError::Unsupported {
+        reason: format!("no X11 keycode for {detail}"),
+    }
+    .tool(false)
 }
 
-fn x11_chord(value: &str) -> Result<String, BackendError> {
-    let chord = keymap::parse_chord(value)?;
-    let mut names: Vec<String> = chord
-        .modifiers
-        .iter()
-        .map(|modifier| {
-            match modifier {
-                keymap::Modifier::Ctrl => "ctrl",
-                keymap::Modifier::Alt => "alt",
-                keymap::Modifier::Shift => "shift",
-                keymap::Modifier::Super => "super",
-            }
-            .into()
-        })
-        .collect();
-    let raw = value
-        .rsplit('+')
-        .next()
-        .unwrap()
-        .trim()
-        .to_ascii_lowercase();
-    let key = match chord.key {
-        keymap::KEY_ENTER => "Return",
-        keymap::KEY_ESC => "Escape",
-        keymap::KEY_BACKSPACE => "BackSpace",
-        keymap::KEY_TAB => "Tab",
-        keymap::KEY_SPACE => "space",
-        keymap::KEY_DELETE => "Delete",
-        keymap::KEY_INSERT => "Insert",
-        keymap::KEY_HOME => "Home",
-        keymap::KEY_END => "End",
-        keymap::KEY_UP => "Up",
-        keymap::KEY_DOWN => "Down",
-        keymap::KEY_LEFT => "Left",
-        keymap::KEY_RIGHT => "Right",
-        keymap::KEY_PAGEUP => "Prior",
-        keymap::KEY_PAGEDOWN => "Next",
-        12 => "minus",
-        13 => "equal",
-        26 => "bracketleft",
-        27 => "bracketright",
-        39 => "semicolon",
-        40 => "apostrophe",
-        41 => "grave",
-        43 => "backslash",
-        51 => "comma",
-        52 => "period",
-        53 => "slash",
-        keymap::KEY_F1..=keymap::KEY_F10 | keymap::KEY_F11 | keymap::KEY_F12 => {
-            names.push(raw.to_ascii_uppercase());
-            return Ok(names.join("+"));
-        }
-        _ => &raw,
-    };
-    names.push(key.into());
-    Ok(names.join("+"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn function_keys_map_to_contiguous_keysyms() {
+        assert_eq!(named_keysym(keymap::KEY_F1), Some(0xffbe));
+        assert_eq!(named_keysym(keymap::KEY_F10), Some(0xffc7));
+        assert_eq!(named_keysym(keymap::KEY_F11), Some(0xffc8));
+        assert_eq!(named_keysym(keymap::KEY_F12), Some(0xffc9));
+    }
+
+    #[test]
+    fn lookup_reports_shift_levels() {
+        let keyboard = Keyboard {
+            min_keycode: 8,
+            per_keycode: 2,
+            keysyms: vec![0, 0, 0x73, 0x53, 0xff1b, 0],
+        };
+        assert_eq!(keyboard.lookup(0x73), Some((9, false)));
+        assert_eq!(keyboard.lookup(0x53), Some((9, true)));
+        assert_eq!(keyboard.lookup(0xff1b), Some((10, false)));
+        assert_eq!(keyboard.lookup(0xdead), None);
+    }
+
+    #[test]
+    fn chord_keysym_prefers_single_char_tokens() {
+        let chord = keymap::parse_chord("ctrl+s").unwrap();
+        assert_eq!(chord_keysym("ctrl+s", &chord), Some('s' as u32));
+        let chord = keymap::parse_chord("shift+Insert").unwrap();
+        assert_eq!(chord_keysym("shift+Insert", &chord), Some(0xff63));
+        let chord = keymap::parse_chord("ctrl+Return").unwrap();
+        assert_eq!(chord_keysym("ctrl+Return", &chord), Some(0xff0d));
+    }
 }
