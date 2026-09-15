@@ -1,16 +1,14 @@
 //! KWin `org.kde.KWin.ScreenShot2` capture → [`ShotDriver`].
 //!
-//! Raw ARGB32 over a pipe (read concurrently — multi-MB frames overflow the
-//! 64KB pipe buffer), QImage decode, downscale to `max_long_edge`, PNG encode.
-//! (Ported from kde-mcp `kwin/screenshot.rs`.)
+//! Raw ARGB32 over an fd (read concurrently — multi-MB frames overflow the
+//! 64KB kernel buffer), QImage decode, downscale to `max_long_edge`, PNG
+//! encode. (Ported from kde-mcp `kwin/screenshot.rs`.)
 
 use crate::error::BackendError;
 use crate::platform::drivers::{Probe, Shot, ShotDriver, ShotFormat, ShotTarget};
 use crate::types::ToolError;
 use image::GenericImageView;
 use std::collections::HashMap;
-use std::io::Read;
-use std::os::fd::{AsRawFd, OwnedFd};
 use zbus::Connection;
 use zvariant::Value;
 
@@ -102,11 +100,18 @@ async fn capture_workspace(
     target: ShotTarget,
     max_long_edge: u32,
 ) -> Result<Shot, BackendError> {
-    let (read_fd, write_fd) = nix::unistd::pipe().map_err(|e| BackendError::Io {
-        path: "pipe()".into(),
-        error: e.to_string(),
-    })?;
-    let read_owned: OwnedFd = read_fd;
+    // Socketpair instead of pipe(): the read end is natively async, so there
+    // is no fcntl(O_NONBLOCK) + AsyncFd dance around a raw pipe fd. KWin
+    // writes the whole frame expecting blocking semantics, so clear the
+    // nonblocking flag on the end handed over via D-Bus.
+    let io = |error: std::io::Error| BackendError::Io {
+        path: "screenshot pipe".into(),
+        error: error.to_string(),
+    };
+    let (read_end, write_end) = tokio::net::UnixStream::pair().map_err(io)?;
+    let write_std = write_end.into_std().map_err(io)?;
+    write_std.set_nonblocking(false).map_err(io)?;
+    let write_fd: std::os::fd::OwnedFd = write_std.into();
     let write_owned = zvariant::OwnedFd::from(write_fd);
     let proxy = ScreenShot2Proxy::new(bus)
         .await
@@ -149,7 +154,7 @@ async fn capture_workspace(
             _ => BackendError::BusDisconnected { detail: error.to_string() },
         })
     };
-    let (results, bytes) = tokio::try_join!(request, read_pipe(read_owned))?;
+    let (results, bytes) = tokio::try_join!(request, read_pipe(read_end))?;
     if bytes.is_empty() {
         return Err(BackendError::ExternalCommandFailed {
             stderr: "screenshot pipe returned 0 bytes".into(),
@@ -185,31 +190,24 @@ async fn capture_workspace(
     })
 }
 
-async fn read_pipe(fd: OwnedFd) -> Result<Vec<u8>, BackendError> {
+async fn read_pipe(mut stream: tokio::net::UnixStream) -> Result<Vec<u8>, BackendError> {
+    use tokio::io::AsyncReadExt;
     let io = |error: std::io::Error| BackendError::Io {
         path: "screenshot pipe".into(),
         error: error.to_string(),
     };
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
-        return Err(io(std::io::Error::last_os_error()));
-    }
-    let fd = tokio::io::unix::AsyncFd::new(std::fs::File::from(fd)).map_err(io)?;
     let read = async {
         let mut bytes = Vec::new();
         let mut chunk = [0u8; 65536];
         loop {
-            let mut ready = fd.readable().await.map_err(io)?;
-            match ready.try_io(|fd| fd.get_ref().read(&mut chunk)) {
-                Ok(Ok(0)) => return Ok(bytes),
-                Ok(Ok(count)) => {
-                    if bytes.len() + count > 128 * 1024 * 1024 {
-                        return Err(BackendError::Failed("Screenshot exceeds 128 MiB".into()));
-                    }
-                    bytes.extend_from_slice(&chunk[..count]);
-                }
-                Ok(Err(error)) => return Err(io(error)),
-                Err(_) => {}
+            let count = stream.read(&mut chunk).await.map_err(io)?;
+            if count == 0 {
+                return Ok(bytes);
             }
+            if bytes.len() + count > 128 * 1024 * 1024 {
+                return Err(BackendError::Failed("Screenshot exceeds 128 MiB".into()));
+            }
+            bytes.extend_from_slice(&chunk[..count]);
         }
     };
     tokio::time::timeout(std::time::Duration::from_secs(10), read)
