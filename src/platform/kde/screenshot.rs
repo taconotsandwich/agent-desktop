@@ -248,7 +248,7 @@ fn decode_qimage(
         4..=6 => {
             for row in 0..h {
                 let line = &bytes[row * stride..row * stride + row_bytes];
-                for px in line.chunks_exact(4) {
+                for px in line.as_chunks::<4>().0 {
                     let a = if qfmt == 4 { 255 } else { px[3] };
                     out.extend_from_slice(&[px[2], px[1], px[0], a]);
                 }
