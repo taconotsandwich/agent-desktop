@@ -72,17 +72,27 @@ impl ShotDriver for KwinShot {
     }
 
     async fn capture(&self, target: ShotTarget, max_long_edge: u32) -> Result<Shot, ToolError> {
-        let result = capture_workspace(&self.bus, target.clone(), max_long_edge).await;
-        match result {
-            Err(BackendError::ExternalCommandFailed { stderr })
-                if stderr.starts_with("screenshot bytes too short") =>
-            {
-                tracing::warn!(%stderr,"Retrying incomplete KWin screenshot transfer");
-                capture_workspace(&self.bus, target, max_long_edge)
-                    .await
-                    .map_err(|error| error.tool(true))
+        // KWin resolves restricted D-Bus interfaces through a cached KService
+        // database. A capture issued immediately after a private session
+        // registers its desktop entry can be denied while that view catches
+        // up, so absorb a transient denial instead of failing the first shot.
+        let mut attempt = 0;
+        let mut retried_transfer = false;
+        loop {
+            attempt += 1;
+            match capture_workspace(&self.bus, target.clone(), max_long_edge).await {
+                Err(BackendError::ExternalCommandFailed { stderr })
+                    if stderr.starts_with("screenshot bytes too short") && !retried_transfer =>
+                {
+                    retried_transfer = true;
+                    tracing::warn!(%stderr,"Retrying incomplete KWin screenshot transfer");
+                }
+                Err(error @ BackendError::PermissionDenied { .. }) if attempt < 6 => {
+                    tracing::debug!(%error, attempt, "KWin authorization not ready; retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                result => return result.map_err(|error| error.tool(true)),
             }
-            result => result.map_err(|error| error.tool(true)),
         }
     }
 }
