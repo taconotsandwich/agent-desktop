@@ -1,0 +1,59 @@
+name: Desktop QA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-qa
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    runs-on: [self-hosted, Linux, X64, agent-desktop-qa]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - suite: desktop
+            desktop: KDE
+            protocol: wayland
+          - suite: desktop
+            desktop: KDE
+            protocol: x11
+          - suite: desktop
+            desktop: GNOME
+            protocol: wayland
+          - suite: farm
+            desktop: KDE
+            protocol: wayland
+    env:
+      QA_IMAGE: localhost/agent-desktop-qa:fedora43
+      QA_ARTIFACTS: ${{ github.workspace }}/target/qa/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}-${{ matrix.desktop }}-${{ matrix.protocol }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Build QA image with cached layers
+        run: podman build --layers -t "$QA_IMAGE" -f qa/containers/Containerfile .
+      - name: Run isolated suite
+        timeout-minutes: 25
+        env:
+          QA_SUITE: ${{ matrix.suite }}
+          QA_DESKTOP: ${{ matrix.desktop }}
+          QA_PROTOCOL: ${{ matrix.protocol }}
+        run: bun qa/run.ts "$QA_SUITE" "$QA_DESKTOP" "$QA_PROTOCOL"
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-${{ matrix.suite }}-${{ matrix.desktop }}-${{ matrix.protocol }}-${{ github.run_attempt }}
+          path: ${{ env.QA_ARTIFACTS }}
+          retention-days: 14
