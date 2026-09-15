@@ -13,6 +13,7 @@ export QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 export GTK_A11Y=atspi
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
+export QT_FORCE_STDERR_LOGGING=1
 # KDE Wayland sessions on GPU-less hosts run on a software DRM device that
 # carries no render node; point Mesa at the software driver and let the shim
 # present that node to KWin so it can initialize EGL instead of falling back
@@ -26,6 +27,8 @@ fi
 export XDG_SESSION_TYPE="${QA_PROTOCOL:?}"
 export XDG_CURRENT_DESKTOP="${QA_DESKTOP:?}"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" /artifacts
+ls -la /dev/dri > /artifacts/dev-dri.txt 2>&1 || true
+printf 'MESA_LOADER_DRIVER_OVERRIDE=%s\nLD_PRELOAD=%s\n' "${MESA_LOADER_DRIVER_OVERRIDE:-}" "${LD_PRELOAD:-}" > /artifacts/software-gl.txt
 processes=()
 cleanup() {
     local status=$?
