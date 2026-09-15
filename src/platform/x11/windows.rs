@@ -1,11 +1,35 @@
 use super::{display, has, run};
 use crate::{
-    error::fail,
+    error::{BackendError, fail},
     platform::drivers::{Bbox, Probe, Ref, WindowDriver, WindowInfo},
     types::ToolError,
 };
 
 pub struct X11Windows;
+
+/// True when an X11 helper aborted because a window vanished underneath it.
+/// EWMH enumeration is inherently racy: windows destroyed between the client
+/// list fetch and the per-window property read produce `BadWindow` aborts.
+fn vanished(error: &BackendError) -> bool {
+    matches!(
+        error,
+        BackendError::ExternalCommandFailed { stderr } if stderr.contains("BadWindow")
+    )
+}
+
+async fn list(display: &str) -> Result<Vec<u8>, ToolError> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match run("list", "wmctrl", &["-l", "-p", "-G", "-u"], display).await {
+            Ok(raw) => return Ok(raw),
+            Err(error) if attempt < 3 && vanished(&error) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => return Err(error.tool(true)),
+        }
+    }
+}
 
 impl X11Windows {
     async fn control(
@@ -48,9 +72,7 @@ impl WindowDriver for X11Windows {
     }
     async fn query(&self) -> Result<Vec<WindowInfo>, ToolError> {
         let d = display().map_err(|error| error.tool(false))?;
-        let raw = run("list", "wmctrl", &["-l", "-p", "-G", "-u"], &d)
-            .await
-            .map_err(|error| error.tool(true))?;
+        let raw = list(&d).await?;
         let active = run("active window", "xdotool", &["getactivewindow"], &d)
             .await
             .ok()
@@ -64,7 +86,7 @@ impl WindowDriver for X11Windows {
             }
             let id = parts[0];
             let numeric = u64::from_str_radix(id.trim_start_matches("0x"), 16).ok();
-            let attributes = run(
+            let attributes = match run(
                 "window attributes",
                 "xprop",
                 &[
@@ -78,7 +100,11 @@ impl WindowDriver for X11Windows {
                 &d,
             )
             .await
-            .map_err(|error| error.tool(true))?;
+            {
+                Ok(attributes) => attributes,
+                Err(error) if vanished(&error) => continue,
+                Err(error) => return Err(error.tool(true)),
+            };
             let attrs = String::from_utf8_lossy(&attributes);
             if let Some(kind) = attrs
                 .lines()
