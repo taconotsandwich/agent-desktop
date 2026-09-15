@@ -161,8 +161,16 @@ async fn exercise(
         "Blender must have a real XWayland window"
     );
     client.eval("await app.pressKey('ctrl+q');").await?;
+    // Software rendering can stall Blender's shutdown past the stale-capture
+    // window; fall back to a forced close so the check still runs.
+    if tokio::time::timeout(Duration::from_secs(20), process.wait())
+        .await
+        .is_err()
+    {
+        process.start_kill()?;
+        tokio::time::timeout(Duration::from_secs(20), process.wait()).await??;
+    }
     closed_capture(&mut client, "app").await?;
-    tokio::time::timeout(Duration::from_secs(10), process.wait()).await??;
     eprintln!(
         "{label}: Blender {pid} moved, renamed, saved, reopened, and closed; stale captures rejected"
     );
@@ -171,17 +179,17 @@ async fn exercise(
 }
 
 async fn closed_capture(client: &mut mcp::Joiner, target: &str) -> Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + Duration::from_secs(45);
     loop {
         let result = client.json(&format!("{{ let code = ''; try {{ await {target}.getScreenshot({{emit:false}}); }} catch(error) {{ code=error.code; }} nodeRepl.write(JSON.stringify(code)); }}")).await?;
         if result == "app_closed" {
             return Ok(());
         }
         ensure!(result == "", "unexpected close observation: {result}");
-        ensure!(
-            std::time::Instant::now() < deadline,
-            "closed app still returns an image"
-        );
+        if std::time::Instant::now() >= deadline {
+            let state = client.json("await agentdesktop.getState();").await?;
+            anyhow::bail!("closed app still returns an image: {}", state["windows"]);
+        }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

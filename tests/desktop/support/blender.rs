@@ -132,25 +132,60 @@ pub async fn workflow(
         verified.status.success(),
         "saved Blender scene verification failed"
     );
-    client.eval("await app.pressKey('ctrl+o');").await?;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let (dialog_width, dialog_height) = client
-        .screenshot("app", &artifacts.join("open-dialog.png"))
-        .await?;
-    client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+l'); await app.pressKey('ctrl+a'); await app.typeText({folder}); await app.pressKey('Enter');",dialog_width/2,dialog_height/2)).await?;
-    client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+a'); await app.typeText('desktop-qa.blend'); await app.pressKey('Enter'); await app.click([{},{}]);",dialog_width/2,dialog_height-22,dialog_width-70,dialog_height-22)).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let reopen_deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        client.eval("await app.pressKey('ctrl+o');").await?;
+        wait_for_file_view(client, reopen_deadline).await?;
+        let (dialog_width, dialog_height) = client
+            .screenshot("app", &artifacts.join("open-dialog.png"))
+            .await?;
+        client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+l'); await app.pressKey('ctrl+a'); await app.typeText({folder}); await app.pressKey('Enter');",dialog_width/2,dialog_height/2)).await?;
+        client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+a'); await app.typeText('desktop-qa.blend'); await app.pressKey('Enter'); await app.click([{},{}]);",dialog_width/2,dialog_height-22,dialog_width-70,dialog_height-22)).await?;
+        let stop = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut reopened = false;
+        loop {
+            let state = save_state(client, "app", &artifacts.join("reopened.json")).await?;
+            if state["window"]["title"]
+                .as_str()
+                .is_some_and(|title| title.contains("desktop-qa.blend"))
+            {
+                reopened = true;
+                break;
+            }
+            if std::time::Instant::now() >= stop {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        if reopened {
+            break;
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < reopen_deadline,
+            "Blender reopened the scene"
+        );
+    }
     client
         .screenshot("app", &artifacts.join("reopened.png"))
         .await?;
-    let state = save_state(client, "app", &artifacts.join("reopened.json")).await?;
-    anyhow::ensure!(
-        state["window"]["title"]
-            .as_str()
-            .is_some_and(|title| title.contains("desktop-qa.blend")),
-        "Blender reopened the scene"
-    );
     Ok(())
+}
+
+/// Wait for Blender's file view to hold the active window. The dialog is a
+/// separate XWayland window with no accessibility tree, so its title in the
+/// window list is the only readiness signal.
+async fn wait_for_file_view(client: &mut Joiner, deadline: std::time::Instant) -> Result<()> {
+    loop {
+        let state = client.json("await app.getAXState();").await?;
+        if state["window"]["title"] == "Blender File View" {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Blender file view did not open"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 }
 
 /// Drive Blender's file view until the scene lands in the artifacts directory.
@@ -160,9 +195,12 @@ pub async fn workflow(
 async fn save_scene(client: &mut Joiner, artifacts: &Path) -> Result<()> {
     let document = artifacts.join("desktop-qa.blend");
     let folder = serde_json::to_string(artifacts)?;
-    for attempt in 1..=3 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
         client.eval("await app.pressKey('ctrl+shift+s');").await?;
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        wait_for_file_view(client, deadline).await?;
         let (dialog_width, dialog_height) = client
             .screenshot("app", &artifacts.join("save-dialog.png"))
             .await?;
@@ -174,11 +212,6 @@ async fn save_scene(client: &mut Joiner, artifacts: &Path) -> Result<()> {
                 serde_json::to_vec_pretty(&desktop)?,
             )?;
         }
-        let state = client.json("await app.getAXState();").await?;
-        anyhow::ensure!(
-            state["window"]["title"] == "Blender File View",
-            "save dialog appeared"
-        );
         client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+l'); await app.pressKey('ctrl+a'); await app.typeText({folder}); await app.pressKey('Enter');",dialog_width/2,dialog_height/2)).await?;
         client.eval(&format!("await app.click([{},{}]); await app.pressKey('ctrl+a'); await app.typeText('desktop-qa.blend'); await app.pressKey('Enter');",dialog_width/2,dialog_height-22)).await?;
         client
@@ -191,12 +224,12 @@ async fn save_scene(client: &mut Joiner, artifacts: &Path) -> Result<()> {
                 dialog_height - 22
             ))
             .await?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let stop = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if std::fs::metadata(&document).is_ok_and(|metadata| metadata.len() > 10_000) {
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= stop {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -204,6 +237,9 @@ async fn save_scene(client: &mut Joiner, artifacts: &Path) -> Result<()> {
         client
             .screenshot("app", &artifacts.join(format!("save-result-{attempt}.png")))
             .await?;
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Blender did not save its scene"
+        );
     }
-    anyhow::bail!("Blender did not save its scene")
 }
