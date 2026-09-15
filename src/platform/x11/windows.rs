@@ -36,6 +36,7 @@ struct Atoms {
     net_wm_window_type: Atom,
     net_wm_window_type_normal: Atom,
     net_wm_window_type_dialog: Atom,
+    net_wm_window_type_utility: Atom,
     utf8_string: Atom,
     net_wm_state_maximized_vert: Atom,
     net_wm_state_maximized_horz: Atom,
@@ -73,6 +74,7 @@ fn atoms(x11: &X11) -> Result<&'static Atoms, BackendError> {
         net_wm_window_type: intern("_NET_WM_WINDOW_TYPE")?,
         net_wm_window_type_normal: intern("_NET_WM_WINDOW_TYPE_NORMAL")?,
         net_wm_window_type_dialog: intern("_NET_WM_WINDOW_TYPE_DIALOG")?,
+        net_wm_window_type_utility: intern("_NET_WM_WINDOW_TYPE_UTILITY")?,
         utf8_string: intern("UTF8_STRING")?,
         net_wm_state_maximized_vert: intern("_NET_WM_STATE_MAXIMIZED_VERT")?,
         net_wm_state_maximized_horz: intern("_NET_WM_STATE_MAXIMIZED_HORZ")?,
@@ -178,6 +180,15 @@ fn active_window(x11: &X11, atoms: &Atoms) -> Result<Option<Window>, BackendErro
         .filter(|window| *window != 0))
 }
 
+/// Windows whose type does not mark them as non-application surfaces. A
+/// window with no advertised type is kept: EWMH clients that skip the hint
+/// are still ordinary windows. UTILITY must be kept because toolkits and
+/// engines use it for real application windows (Godot's running game window
+/// is UTILITY), and dropping it can hide the active window entirely.
+fn acceptable_window_type(types: &[Atom], accepted: &[Atom]) -> bool {
+    types.is_empty() || types.iter().any(|kind| accepted.contains(kind))
+}
+
 fn window_info(
     x11: &X11,
     atoms: &Atoms,
@@ -185,10 +196,14 @@ fn window_info(
     active: Option<Window>,
 ) -> Result<Option<WindowInfo>, BackendError> {
     let types = atom_property(x11, window, atoms.net_wm_window_type)?;
-    if !types.is_empty()
-        && !types.contains(&atoms.net_wm_window_type_normal)
-        && !types.contains(&atoms.net_wm_window_type_dialog)
-    {
+    if !acceptable_window_type(
+        &types,
+        &[
+            atoms.net_wm_window_type_normal,
+            atoms.net_wm_window_type_dialog,
+            atoms.net_wm_window_type_utility,
+        ],
+    ) {
         return Ok(None);
     }
     let title = string_property(x11, window, atoms.net_wm_name, atoms.utf8_string)?
@@ -408,5 +423,15 @@ mod tests {
         );
         assert!(window_of(&Ref("kwin:abc".into())).is_err());
         assert!(window_of(&Ref("x11:nothex".into())).is_err());
+    }
+
+    #[test]
+    fn utility_and_untyped_windows_stay_visible() {
+        let accepted = [10, 20, 30];
+        assert!(acceptable_window_type(&[], &accepted));
+        assert!(acceptable_window_type(&[30], &accepted));
+        assert!(acceptable_window_type(&[99, 20], &accepted));
+        assert!(!acceptable_window_type(&[99], &accepted));
+        assert!(!acceptable_window_type(&[40, 50], &accepted));
     }
 }
