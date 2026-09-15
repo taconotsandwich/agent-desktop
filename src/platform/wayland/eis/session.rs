@@ -49,14 +49,9 @@ impl EisSession {
     }
 
     pub fn now_us() -> u64 {
-        let mut time = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        unsafe {
-            libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time);
-        }
-        time.tv_sec as u64 * 1_000_000 + time.tv_nsec as u64 / 1_000
+        nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+            .map(|time| time.tv_sec() as u64 * 1_000_000 + time.tv_nsec() as u64 / 1_000)
+            .unwrap_or_default()
     }
 
     pub fn flush(&self) -> Result<(), BackendError> {
