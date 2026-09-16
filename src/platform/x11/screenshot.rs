@@ -72,7 +72,7 @@ fn capture_image(
         )));
     }
     let mut rgba = Vec::with_capacity(pixels * 4);
-    for chunk in reply.data.chunks_exact(4).take(pixels) {
+    for chunk in reply.data.as_chunks::<4>().0.iter().take(pixels) {
         let alpha = if depth == 32 { chunk[3] } else { 255 };
         rgba.extend_from_slice(&[chunk[2], chunk[1], chunk[0], alpha]);
     }
