@@ -26,9 +26,6 @@ if [[ "$QA_DESKTOP" == KDE && "$QA_PROTOCOL" == wayland ]] && ! compgen -G "/dev
 fi
 export XDG_SESSION_TYPE="${QA_PROTOCOL:?}"
 export XDG_CURRENT_DESKTOP="${QA_DESKTOP:?}"
-if [[ "$QA_DESKTOP" == KDE && "$QA_PROTOCOL" == wayland ]]; then
-    export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast
-fi
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" /artifacts
 ls -la /dev/dri > /artifacts/dev-dri.txt 2>&1 || true
 printf 'MESA_LOADER_DRIVER_OVERRIDE=%s\nLD_PRELOAD=%s\n' "${MESA_LOADER_DRIVER_OVERRIDE:-}" "${LD_PRELOAD:-}" > /artifacts/software-gl.txt
