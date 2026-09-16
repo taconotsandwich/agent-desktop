@@ -190,6 +190,19 @@ impl VirtualSeat {
         let dbus = zbus::fdo::DBusProxy::new(&accessibility)
             .await
             .map_err(|error| BackendError::Failed(error.to_string()))?;
+        // SELinux labels at-spi2-registryd as a binary that a user session
+        // bus daemon (unconfined_dbusd_t) is not allowed to exec, so D-Bus
+        // activation fails inside private seats. Spawning the registry here
+        // runs it in this process's domain, which is permitted; activation
+        // stays the fallback for setups where the spawn itself fails.
+        if !dbus
+            .name_has_owner(zbus::names::BusName::WellKnown(registry.clone()))
+            .await
+            .unwrap_or(false)
+            && seat.spawn("at-spi2-registryd", &[], &env).is_ok()
+        {
+            let _ = wait_name(&accessibility, "org.a11y.atspi.Registry").await;
+        }
         // KWin may have activated the registry already. Ask D-Bus for its
         // single owner instead of tracking a second process that exits.
         dbus.start_service_by_name(registry.clone(), 0)
@@ -199,10 +212,14 @@ impl VirtualSeat {
             .get_connection_unix_process_id(registry.into())
             .await
             .map_err(|error| BackendError::Failed(error.to_string()))?;
-        seat.processes
-            .push(ProcessIdentity::read(pid as i32).ok_or_else(|| {
-                BackendError::Failed("Accessibility registry exited during startup".into())
-            })?);
+        let identity = ProcessIdentity::read(pid as i32).ok_or_else(|| {
+            BackendError::Failed("Accessibility registry exited during startup".into())
+        })?;
+        // The self-spawned registry is already tracked; only record the
+        // D-Bus owner when activation produced it.
+        if !seat.processes.contains(&identity) {
+            seat.processes.push(identity);
+        }
         std::fs::write(
             &seat.env_file,
             env.iter()
