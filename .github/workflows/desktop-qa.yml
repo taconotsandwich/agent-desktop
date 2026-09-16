@@ -55,7 +55,7 @@ jobs:
           bun packaging/npm/smoke.ts
           bun packaging/npm/skill-smoke.ts
       - name: Build QA image with cached layers
-        run: podman build --layers -t "$QA_IMAGE" -f qa/containers/Containerfile .
+        run: podman build --layers -t "$QA_IMAGE" -f containers/Containerfile .
       - name: Provision virtual DRM device
         if: matrix.render_device != ''
         run: |
@@ -85,7 +85,44 @@ jobs:
           QA_DESKTOP: ${{ matrix.desktop }}
           QA_PROTOCOL: ${{ matrix.protocol }}
           QA_RENDER_DEVICE: ${{ matrix.render_device }}
-        run: bun qa/run.ts "$QA_SUITE" "$QA_DESKTOP" "$QA_PROTOCOL"
+        run: |
+          set -euo pipefail
+          row="$QA_SUITE-$QA_DESKTOP-$QA_PROTOCOL"
+          name="agent-desktop-qa-${row}-$$"
+          staged=$(mktemp -d)
+          mkdir -p "$QA_ARTIFACTS"
+          cleanup() {
+            podman rm -f "$name" > /dev/null 2>&1 || true
+            rm -rf "$staged"
+          }
+          trap cleanup EXIT
+          rsync -a --exclude .git --exclude target --exclude .DS_Store ./ "$staged/repo/"
+          args=(
+            podman run --rm --init --name "$name"
+            --userns=keep-id:uid=1000,gid=1000 --user=1000:1000
+            --timeout=1200 --shm-size=1g --memory=8g --cpus=4
+            -v "$staged/repo:/work:ro,Z"
+            -v "agent-desktop-qa-build-$row:/work/target"
+            -v "agent-desktop-qa-cargo:/home/qa/.cargo"
+            -v "$QA_ARTIFACTS:/artifacts:rw,Z"
+            -e "QA_SUITE=$QA_SUITE" -e "QA_DESKTOP=$QA_DESKTOP" -e "QA_PROTOCOL=$QA_PROTOCOL"
+          )
+          if [[ -n ${QA_PACKAGES_DIR:-} ]]; then
+            args+=(-v "$QA_PACKAGES_DIR:/work/npm-packages:ro,Z" -e "QA_PACKAGES_DIR=/work/npm-packages")
+          fi
+          if [[ -n ${QA_RENDER_DEVICE:-} ]]; then
+            args+=(--device "$QA_RENDER_DEVICE" --group-add keep-groups)
+          fi
+          if [[ "$QA_DESKTOP" == GNOME ]]; then
+            args+=(--security-opt label=disable)
+          fi
+          args+=(--entrypoint /bin/bash "$QA_IMAGE" /work/containers/session.sh)
+          status=0
+          "${args[@]}" 2>&1 | tee "$QA_ARTIFACTS/run.log" || status=$?
+          printf '{"suite":"%s","desktop":"%s","protocol":"%s","status":"%s"}\n' \
+            "$QA_SUITE" "$QA_DESKTOP" "$QA_PROTOCOL" \
+            "$([[ $status -eq 0 ]] && echo passed || echo failed)" > "$QA_ARTIFACTS/result.json"
+          exit "$status"
       - name: Upload QA artifacts
         if: always()
         uses: actions/upload-artifact@v7

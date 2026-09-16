@@ -133,7 +133,7 @@ if [[ "$QA_DESKTOP" == GNOME ]]; then
         sleep 0.05
     done
     gdbus introspect --session --dest org.gnome.Mutter.RemoteDesktop --object-path /org/gnome/Mutter/RemoteDesktop > /artifacts/mutter-remote-desktop.txt
-    gjs -m /work/qa/containers/mutter-probe.js > /artifacts/mutter-session.xml
+    gjs -m /work/containers/mutter-probe.js > /artifacts/mutter-session.xml
     gnome-extensions info agent-desktop@local > /artifacts/extension-info.txt
     shopt -s nullglob
     auth_files=("$XDG_RUNTIME_DIR"/.mutter-Xwaylandauth.*)
