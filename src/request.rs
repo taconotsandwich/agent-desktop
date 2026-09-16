@@ -102,17 +102,27 @@ pub struct Click {
     pub mouse_button: Button,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    #[serde(alias = "u")]
     Up,
-    #[serde(alias = "d")]
     Down,
-    #[serde(alias = "l")]
     Left,
-    #[serde(alias = "r")]
     Right,
+}
+
+impl<'de> Deserialize<'de> for Direction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        match value.to_ascii_lowercase().as_str() {
+            "u" | "up" => Ok(Self::Up),
+            "d" | "down" => Ok(Self::Down),
+            "l" | "left" => Ok(Self::Left),
+            "r" | "right" => Ok(Self::Right),
+            other => Err(serde::de::Error::custom(format!(
+                "unknown scroll direction {other:?} (use up, down, left, or right)"
+            ))),
+        }
+    }
 }
 
 impl Direction {
@@ -158,4 +168,27 @@ fn one_page() -> f64 {
 }
 fn text_format() -> String {
     "text".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn scroll_directions_parse_case_insensitively() {
+        for (value, expected) in [
+            ("Down", Direction::Down),
+            ("UP", Direction::Up),
+            ("l", Direction::Left),
+            ("right", Direction::Right),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<Direction>(json!(value)).unwrap(),
+                expected
+            );
+        }
+        let error = serde_json::from_value::<Direction>(json!("sideways")).unwrap_err();
+        assert!(error.to_string().contains("unknown scroll direction"));
+    }
 }

@@ -158,9 +158,10 @@ impl Joiner {
         }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let state = tokio::time::timeout_at(deadline, self.json("await agentdesktop.getState();"))
-                .await
-                .context("timed out checking test-owned windows during cleanup")??;
+            let state =
+                tokio::time::timeout_at(deadline, self.json("await agentdesktop.getState();"))
+                    .await
+                    .context("timed out checking test-owned windows during cleanup")??;
             let windows = state["windows"].as_array().context("desktop windows")?;
             let visible = windows.iter().any(|window| {
                 applications

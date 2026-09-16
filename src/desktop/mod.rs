@@ -154,7 +154,12 @@ impl Engine {
         let app = state
             .apps
             .get(id)
-            .ok_or_else(|| fail("stale_target", "Select the application with agentdesktop.getApp()"))?
+            .ok_or_else(|| {
+                fail(
+                    "stale_target",
+                    "Select the application with agentdesktop.getApp()",
+                )
+            })?
             .clone();
         let last = state
             .observations

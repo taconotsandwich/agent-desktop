@@ -65,7 +65,9 @@ impl Registry {
 fn unavailable(capability: &str) -> ToolError {
     ToolError {
         code: "unsupported".into(),
-        message: format!("No backend for {capability}; inspect agentdesktop.getState() for probe failures"),
+        message: format!(
+            "No backend for {capability}; inspect agentdesktop.getState() for probe failures"
+        ),
         retryable: false,
     }
 }

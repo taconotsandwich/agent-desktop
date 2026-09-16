@@ -24,7 +24,9 @@ async fn qa_application_discovery() -> Result<()> {
         ("blender.desktop", "blender"),
     ] {
         let state = client
-            .json(&format!("const {binding} = await agentdesktop.getApp({name:?});"))
+            .json(&format!(
+                "const {binding} = await agentdesktop.getApp({name:?});"
+            ))
             .await?;
         std::fs::write(
             seat.artifacts.join(format!("{binding}.json")),
