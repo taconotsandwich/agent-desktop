@@ -120,3 +120,26 @@ pub fn parse_button(name: &str) -> Result<u32, BackendError> {
         _ => Err(unsupported(format!("unknown button: {name}"))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parsing_preserves_symbols_and_explicit_modifiers() {
+        for text in ["Ctrl++", "Ctrl+plus"] {
+            let chord = parse_chord(text).unwrap();
+            assert_eq!(chord.key, xkb::Keysym::plus);
+            assert_eq!(chord.modifiers, vec![Modifier::Ctrl]);
+        }
+        assert_eq!(parse_chord("Ctrl+?").unwrap().key, xkb::Keysym::question);
+        assert_eq!(parse_chord("Ω").unwrap().key, xkb::Keysym::Greek_OMEGA);
+        assert_eq!(parse_chord("F24").unwrap().key, xkb::Keysym::F24);
+        assert_eq!(
+            parse_chord("AltGr+Q").unwrap().modifiers,
+            vec![Modifier::AltGr]
+        );
+        for text in ["", "Ctrl+", "Ctrl++Z", "Ctrl+Ctrl+Z", "not_a_key", "ab\0cd"] {
+            assert!(parse_chord(text).is_err(), "{text:?}");
+        }
+    }
+}

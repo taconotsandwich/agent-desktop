@@ -189,3 +189,6 @@ impl Keyboard {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests;
