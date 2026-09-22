@@ -82,7 +82,7 @@ fn chord_keysym(text: &str, chord: &keymap::Chord) -> Option<u32> {
     let token = text.rsplit('+').next()?.trim();
     let mut chars = token.chars();
     match (chars.next(), chars.next()) {
-        (Some(ch), None) if ch.is_ascii() => Some(ch as u32),
+        (Some(ch), None) if ch.is_ascii() => Some(ch.to_ascii_lowercase() as u32),
         (Some(_), None) => None,
         _ => named_keysym(chord.key),
     }
@@ -444,6 +444,26 @@ mod tests {
         assert_eq!(keyboard.lookup(0x53), Some((9, true)));
         assert_eq!(keyboard.lookup(0xff1b), Some((10, false)));
         assert_eq!(keyboard.lookup(0xdead), None);
+    }
+
+    #[test]
+    fn uppercase_shortcut_letters_do_not_add_an_implicit_shift() {
+        let keyboard = Keyboard {
+            min_keycode: 8,
+            per_keycode: 2,
+            keysyms: vec!['z' as u32, 'Z' as u32],
+        };
+        for text in ["CTRL+Z", "ctrl+z", "CTRL+SHIFT+Z"] {
+            let chord = keymap::parse_chord(text).unwrap();
+            let keysym = chord_keysym(text, &chord).unwrap();
+            assert_eq!(keyboard.lookup(keysym), Some((8, false)));
+            assert_eq!(
+                chord.modifiers.contains(&keymap::Modifier::Shift),
+                text == "CTRL+SHIFT+Z",
+            );
+        }
+        let chord = keymap::parse_chord("ctrl+?").unwrap();
+        assert_eq!(chord_keysym("ctrl+?", &chord), Some('?' as u32));
     }
 
     #[test]
