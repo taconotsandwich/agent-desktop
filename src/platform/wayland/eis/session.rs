@@ -231,6 +231,7 @@ impl EisSession {
     }
 
     async fn dispatch(&self, stroke: Stroke, hold: Duration) -> Result<(), BackendError> {
+        let _release = ReleaseOnDrop(self);
         let (dev, kb) = self.keyboard_iface()?;
         let key = evdev(stroke.key)?;
         let modifiers = stroke
@@ -267,6 +268,7 @@ impl EisSession {
         button: u32,
         modifiers: &[Modifier],
     ) -> Result<(), BackendError> {
+        let _release = ReleaseOnDrop(self);
         let (kdev_inner, kb, keys) = self.modifier_hold(modifiers).await?;
         let outcome = self.click(x, y, button, 1).await;
         self.modifier_release(&keys, &kdev_inner, &kb).await?;
@@ -282,6 +284,7 @@ impl EisSession {
         dy: f32,
         modifiers: &[Modifier],
     ) -> Result<(), BackendError> {
+        let _release = ReleaseOnDrop(self);
         let (kdev_inner, kb, keys) = self.modifier_hold(modifiers).await?;
         let outcome = self.scroll(x, y, dx, dy).await;
         self.modifier_release(&keys, &kdev_inner, &kb).await?;
@@ -388,7 +391,7 @@ impl EisSession {
         let sequence = self
             .sequence
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        device.start_emulating(sequence, self.link.connection.serial());
+        device.start_emulating(self.link.connection.serial(), sequence);
     }
     fn stop(&self, device: &ei::Device) {
         if !self.held_keys.lock().expect("held keys").is_empty()
@@ -416,4 +419,11 @@ impl Drop for EisSession {
 fn evdev(key: u32) -> Result<u32, BackendError> {
     key.checked_sub(8)
         .ok_or_else(|| keymap::unsupported("XKB keycode is outside the evdev range"))
+}
+
+struct ReleaseOnDrop<'a>(&'a EisSession);
+impl Drop for ReleaseOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.release_held();
+    }
 }

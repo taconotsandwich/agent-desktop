@@ -40,6 +40,8 @@ fn button_code(button: Button) -> u8 {
 fn fake(x11: &X11, type_: u8, detail: u8, x: i16, y: i16) -> Result<(), BackendError> {
     x11.connection
         .xtest_fake_input(type_, detail, x11rb::CURRENT_TIME, x11.root, x, y, 0)
+        .map_err(failed)?
+        .check()
         .map_err(failed)?;
     x11.connection.flush().map_err(failed)
 }
@@ -60,6 +62,7 @@ impl HeldKeys {
         }
     }
     fn press_key(&mut self, keycode: u32) -> Result<(), BackendError> {
+        u8::try_from(keycode).map_err(failed)?;
         self.keys.push(keycode);
         fake(
             &self.x11,
@@ -70,22 +73,24 @@ impl HeldKeys {
         )
     }
     fn release_key(&mut self, keycode: u32) -> Result<(), BackendError> {
-        self.keys.retain(|held| *held != keycode);
         fake(
             &self.x11,
             KEY_RELEASE_EVENT,
             u8::try_from(keycode).map_err(failed)?,
             0,
             0,
-        )
+        )?;
+        self.keys.retain(|held| *held != keycode);
+        Ok(())
     }
     fn press_button(&mut self, button: u8) -> Result<(), BackendError> {
         self.buttons.push(button);
         fake(&self.x11, BUTTON_PRESS_EVENT, button, 0, 0)
     }
     fn release_button(&mut self, button: u8) -> Result<(), BackendError> {
+        fake(&self.x11, BUTTON_RELEASE_EVENT, button, 0, 0)?;
         self.buttons.retain(|held| *held != button);
-        fake(&self.x11, BUTTON_RELEASE_EVENT, button, 0, 0)
+        Ok(())
     }
 }
 
