@@ -7,5 +7,5 @@ sudo dnf install -y \
   dbus-daemon dbus-tools \
   wl-clipboard xclip \
   maim xdotool xmodmap wmctrl xorg-x11-server-utils ImageMagick \
-  wayland-devel libxkbcommon-devel
+  wayland-devel libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel
 echo "Host dependencies installed."

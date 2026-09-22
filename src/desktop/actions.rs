@@ -118,9 +118,10 @@ impl Engine {
                     .await
             }
             Operation::PressKey { key } => {
-                crate::platform::keymap::parse_chord(key).map_err(|error| error.tool(false))?;
+                let chord =
+                    crate::platform::keymap::parse_chord(key).map_err(|error| error.tool(false))?;
                 self.focus(id).await?;
-                self.registry.input()?.key(vec![key.clone()]).await
+                self.registry.input()?.key(vec![chord]).await
             }
             Operation::TypeText { text } => {
                 if text.len() > 100_000 {
@@ -182,7 +183,14 @@ impl Engine {
     async fn paste(&self, id: &str, text: &str) -> Result<(), ToolError> {
         self.focus(id).await?;
         let clipboard = crate::desktop::clipboard::Clipboard::replace(self.session, text).await?;
-        let input = self.registry.input()?.key(vec!["ctrl+v".into()]).await;
+        let input = self
+            .registry
+            .input()?
+            .key(vec![
+                crate::platform::keymap::parse_chord("ctrl+v")
+                    .map_err(|error| error.tool(false))?,
+            ])
+            .await;
         // Keep serving the selection until the target has had time to service
         // the paste; software-rendered sessions need well over the dispatch
         // latency to copy it, and restoring early loses the paste entirely.

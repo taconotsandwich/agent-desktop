@@ -1,6 +1,9 @@
 use crate::{
     error::BackendError,
-    platform::keymap::{self, Modifier},
+    platform::{
+        keyboard::{Keyboard, Stroke},
+        keymap::{self, Modifier},
+    },
 };
 use reis::ei;
 use std::time::Duration;
@@ -200,55 +203,59 @@ impl EisSession {
         self.flush()
     }
 
-    pub async fn type_ascii(&self, text: &str) -> Result<(), BackendError> {
-        let (dev, kb) = self.keyboard_iface()?;
-        self.start(&dev);
-        self.flush()?;
-        for ch in text.chars() {
-            let code = keymap::keycode_for_char(ch).ok_or_else(|| BackendError::Unsupported {
-                reason: format!("no evdev mapping for {ch:?}"),
-            })?;
-            let shift = keymap::shift_required(ch);
-            if shift {
-                self.key_event(&kb, keymap::KEY_LEFTSHIFT, ei::keyboard::KeyState::Press);
-                self.frame(&dev)?;
-            }
-            self.key_event(&kb, code, ei::keyboard::KeyState::Press);
-            self.frame(&dev)?;
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            self.key_event(&kb, code, ei::keyboard::KeyState::Released);
-            self.frame(&dev)?;
-            if shift {
-                self.key_event(&kb, keymap::KEY_LEFTSHIFT, ei::keyboard::KeyState::Released);
-                self.frame(&dev)?;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        self.stop(&dev);
-        self.flush()
+    fn keyboard(&self) -> Result<Keyboard, BackendError> {
+        let text = self
+            .link
+            .keyboard_map
+            .clone()
+            .ok_or_else(|| keymap::unsupported("EIS device did not supply a keyboard map"))?;
+        Keyboard::from_text(
+            text,
+            *self.link.keyboard_state.lock().expect("keyboard state"),
+        )
     }
 
-    pub async fn chord(&self, modifiers: &[Modifier], key: u32) -> Result<(), BackendError> {
+    pub async fn type_text(&self, text: &str) -> Result<(), BackendError> {
+        for ch in text.chars() {
+            self.link.synchronize().await?;
+            let stroke = self.keyboard()?.literal(ch)?;
+            self.dispatch(stroke, Duration::from_millis(5)).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn chord(&self, chord: &keymap::Chord) -> Result<(), BackendError> {
+        self.link.synchronize().await?;
+        let stroke = self.keyboard()?.chord(chord)?;
+        self.dispatch(stroke, Duration::from_millis(10)).await
+    }
+
+    async fn dispatch(&self, stroke: Stroke, hold: Duration) -> Result<(), BackendError> {
         let (dev, kb) = self.keyboard_iface()?;
+        let key = evdev(stroke.key)?;
+        let modifiers = stroke
+            .modifiers
+            .into_iter()
+            .map(evdev)
+            .collect::<Result<Vec<_>, _>>()?;
         self.start(&dev);
         self.flush()?;
-        for m in modifiers {
-            self.key_event(&kb, m.keycode(), ei::keyboard::KeyState::Press);
+        for &modifier in &modifiers {
+            self.key_event(&kb, modifier, ei::keyboard::KeyState::Press);
             self.frame(&dev)?;
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         self.key_event(&kb, key, ei::keyboard::KeyState::Press);
         self.frame(&dev)?;
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(hold).await;
         self.key_event(&kb, key, ei::keyboard::KeyState::Released);
         self.frame(&dev)?;
-        for m in modifiers.iter().rev() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            self.key_event(&kb, m.keycode(), ei::keyboard::KeyState::Released);
+        for &modifier in modifiers.iter().rev() {
+            self.key_event(&kb, modifier, ei::keyboard::KeyState::Released);
             self.frame(&dev)?;
         }
         self.stop(&dev);
-        self.flush()
+        self.flush()?;
+        self.link.synchronize().await
     }
 
     /// Modifier-wrapped click (Ctrl+click etc.): press modifiers on the
@@ -260,9 +267,9 @@ impl EisSession {
         button: u32,
         modifiers: &[Modifier],
     ) -> Result<(), BackendError> {
-        let (kdev_inner, kb) = self.modifier_hold(modifiers).await?;
+        let (kdev_inner, kb, keys) = self.modifier_hold(modifiers).await?;
         let outcome = self.click(x, y, button, 1).await;
-        self.modifier_release(modifiers, &kdev_inner, &kb).await?;
+        self.modifier_release(&keys, &kdev_inner, &kb).await?;
         outcome
     }
 
@@ -275,16 +282,23 @@ impl EisSession {
         dy: f32,
         modifiers: &[Modifier],
     ) -> Result<(), BackendError> {
-        let (kdev_inner, kb) = self.modifier_hold(modifiers).await?;
+        let (kdev_inner, kb, keys) = self.modifier_hold(modifiers).await?;
         let outcome = self.scroll(x, y, dx, dy).await;
-        self.modifier_release(modifiers, &kdev_inner, &kb).await?;
+        self.modifier_release(&keys, &kdev_inner, &kb).await?;
         outcome
     }
 
     async fn modifier_hold(
         &self,
         modifiers: &[Modifier],
-    ) -> Result<(ei::Device, ei::Keyboard), BackendError> {
+    ) -> Result<(ei::Device, ei::Keyboard, Vec<u32>), BackendError> {
+        self.link.synchronize().await?;
+        let keys = self
+            .keyboard()?
+            .modifiers(modifiers)?
+            .into_iter()
+            .map(evdev)
+            .collect::<Result<Vec<_>, _>>()?;
         let kdev =
             self.link
                 .keyboard_device
@@ -300,24 +314,24 @@ impl EisSession {
                 })?;
         self.start(&kdev_inner);
         self.flush()?;
-        for m in modifiers {
-            self.key_event(&kb, m.keycode(), ei::keyboard::KeyState::Press);
+        for &key in &keys {
+            self.key_event(&kb, key, ei::keyboard::KeyState::Press);
             kdev_inner.frame(self.link.connection.serial(), Self::now_us());
             self.flush()?;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        Ok((kdev_inner, kb))
+        Ok((kdev_inner, kb, keys))
     }
 
     async fn modifier_release(
         &self,
-        modifiers: &[Modifier],
+        keys: &[u32],
         kdev_inner: &ei::Device,
         kb: &ei::Keyboard,
     ) -> Result<(), BackendError> {
-        for m in modifiers.iter().rev() {
+        for &key in keys.iter().rev() {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            self.key_event(kb, m.keycode(), ei::keyboard::KeyState::Released);
+            self.key_event(kb, key, ei::keyboard::KeyState::Released);
             kdev_inner.frame(self.link.connection.serial(), Self::now_us());
             self.flush()?;
         }
@@ -397,4 +411,9 @@ impl Drop for EisSession {
         self.release_held();
         self.link.stop.take();
     }
+}
+
+fn evdev(key: u32) -> Result<u32, BackendError> {
+    key.checked_sub(8)
+        .ok_or_else(|| keymap::unsupported("XKB keycode is outside the evdev range"))
 }

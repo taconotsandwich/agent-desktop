@@ -5,7 +5,7 @@ RUN dnf install -y cargo rust gcc gcc-c++ make pkgconf-pkg-config dbus-daemon db
     gnome-shell gnome-session xdg-desktop-portal-gnome gnome-settings-daemon \
     xorg-x11-server-Xvfb xorg-x11-xauth xdotool wmctrl xprop maim xclip wl-clipboard \
     mesa-dri-drivers mesa-libEGL mesa-libGL glx-utils krita blender procps-ng \
-    libxkbcommon-devel wayland-devel fontconfig dejavu-sans-fonts \
+    libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel wayland-devel fontconfig dejavu-sans-fonts \
     && dnf clean all
 RUN useradd --uid 1000 --create-home qa
 RUN dnf install -y unzip \

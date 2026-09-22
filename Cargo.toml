@@ -48,7 +48,8 @@ atspi          = { version = "=0.30", features = ["tokio"] }
 reis           = { version = "=0.6.1", features = ["tokio"] }
 image          = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 nix            = { version = "0.31", default-features = false, features = ["fs", "signal", "process", "time"] }
-x11rb          = { version = "0.14", features = ["xtest"] }
+x11rb          = { version = "0.14", features = ["xtest", "allow-unsafe-code"] }
+xkbcommon      = { version = "0.9", default-features = false, features = ["x11"] }
 tempfile       = "3.10"
 futures-util   = "0.3"
 rquickjs       = "=0.12.0"

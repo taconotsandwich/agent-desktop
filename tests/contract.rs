@@ -51,7 +51,13 @@ async fn fake_input_rejects_empty_shapes() {
     let i = FakeInput;
     assert!(i.type_text("hi".into()).await.is_ok());
     assert!(i.type_text(String::new()).await.is_err());
-    assert!(i.key(vec!["ctrl+s".into()]).await.is_ok());
+    assert!(
+        i.key(vec![
+            agent_desktop::platform::keymap::parse_chord("ctrl+s").unwrap()
+        ])
+        .await
+        .is_ok()
+    );
     assert!(i.key(vec![]).await.is_err());
     assert!(i.click(10, 10, Button::Left, vec![]).await.is_ok());
     assert!(i.move_to(0, 0).await.is_ok());

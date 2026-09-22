@@ -1,4 +1,5 @@
 mod input;
+mod keyboard;
 mod screenshot;
 mod windows;
 pub use input::X11Input;
@@ -10,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use x11rb::{
     connection::Connection as _,
     protocol::xproto::{ConnectionExt as _, Window},
-    rust_connection::RustConnection,
+    xcb_ffi::XCBConnection,
 };
 
 pub(super) fn display() -> Result<String, BackendError> {
@@ -21,7 +22,7 @@ pub(super) fn display() -> Result<String, BackendError> {
 }
 
 pub(super) struct X11 {
-    pub connection: RustConnection,
+    pub connection: XCBConnection,
     pub root: Window,
     pub root_width: u16,
     pub root_height: u16,
@@ -30,11 +31,13 @@ pub(super) struct X11 {
 impl X11 {
     fn connect() -> Result<Self, BackendError> {
         let display = display()?;
-        let (connection, screen_num) =
-            x11rb::connect(Some(&display)).map_err(|error| BackendError::Unavailable {
-                backend: "x11",
-                detail: format!("{display}: {error}"),
-            })?;
+        let (connection, screen_num) = XCBConnection::connect(Some(
+            &std::ffi::CString::new(display.as_str()).map_err(failed)?,
+        ))
+        .map_err(|error| BackendError::Unavailable {
+            backend: "x11",
+            detail: format!("{display}: {error}"),
+        })?;
         let root = connection.setup().roots[screen_num].root;
         let geometry = connection
             .get_geometry(root)

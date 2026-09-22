@@ -46,7 +46,7 @@ jobs:
       - name: Install container runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman crun libwayland-dev libxkbcommon-dev dbus-daemon
+          sudo apt-get install -y podman crun libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev dbus-daemon
       - name: Build npm packages
         run: bun packaging/npm/build.ts
       - name: Verify npm and npx installation

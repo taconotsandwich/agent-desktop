@@ -33,3 +33,5 @@ pub fn detect_desktop() -> Desktop {
         Desktop::Other
     }
 }
+
+pub(crate) mod keyboard;

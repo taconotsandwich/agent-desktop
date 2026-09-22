@@ -95,7 +95,10 @@ impl InputDriver for FakeInput {
         }
         Ok(())
     }
-    async fn key(&self, keys: Vec<String>) -> Result<(), ToolError> {
+    async fn key(
+        &self,
+        keys: Vec<agent_desktop::platform::keymap::Chord>,
+    ) -> Result<(), ToolError> {
         if keys.is_empty() {
             return Err(err());
         }

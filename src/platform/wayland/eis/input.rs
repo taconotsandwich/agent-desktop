@@ -142,20 +142,11 @@ impl<C: EisConnector> InputDriver for EisInput<C> {
     }
 
     async fn type_text(&self, text: String) -> Result<(), ToolError> {
-        if let Some(ch) = text
-            .chars()
-            .find(|c| keymap::keycode_for_char(*c).is_none())
-        {
-            return Err(BackendError::Unsupported {
-                reason: format!("no evdev mapping for {ch:?}; use clipboard paste path"),
-            }
-            .tool(false));
-        }
         let s = self.session().await.map_err(|e| e.tool(true))?;
-        s.type_ascii(&text).await.map_err(|e| e.tool(true))
+        s.type_text(&text).await.map_err(|e| e.tool(true))
     }
 
-    async fn key(&self, keys: Vec<String>) -> Result<(), ToolError> {
+    async fn key(&self, keys: Vec<keymap::Chord>) -> Result<(), ToolError> {
         if keys.is_empty() {
             return Err(BackendError::Unsupported {
                 reason: "empty chord".into(),
@@ -163,11 +154,8 @@ impl<C: EisConnector> InputDriver for EisInput<C> {
             .tool(false));
         }
         let s = self.session().await.map_err(|e| e.tool(true))?;
-        for chord_str in &keys {
-            let chord = keymap::parse_chord(chord_str).map_err(|e| e.tool(false))?;
-            s.chord(&chord.modifiers, chord.key)
-                .await
-                .map_err(|e| e.tool(true))?;
+        for chord in &keys {
+            s.chord(chord).await.map_err(|e| e.tool(true))?;
         }
         Ok(())
     }

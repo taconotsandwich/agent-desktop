@@ -105,7 +105,7 @@ pub trait InputDriver: Send + Sync {
     /// Literal text only. No modifiers (poka-yoke: use `key` for chords).
     async fn type_text(&self, text: String) -> Result<(), ToolError>;
     /// Named keys/chords only (e.g. "ctrl+s"). No text.
-    async fn key(&self, keys: Vec<String>) -> Result<(), ToolError>;
+    async fn key(&self, keys: Vec<crate::platform::keymap::Chord>) -> Result<(), ToolError>;
 }
 
 #[async_trait::async_trait]
