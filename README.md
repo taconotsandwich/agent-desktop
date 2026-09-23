@@ -52,9 +52,9 @@ Each cell says what an `agentdesktop` call does on that backend:
 | `click([x, y])`, `click(index)` without an action, right, middle and double clicks | foreground; background for Xwayland windows | background | foreground; background for Xwayland windows | inside seat |
 | `drag` | foreground; background for Xwayland windows | background; a drag the application turns into drag-and-drop may grab the real pointer | foreground; background for Xwayland windows | inside seat |
 | `scroll` | foreground; background for Xwayland windows | background; Qt applications ignore synthetic wheel events (see toolkit notes) | foreground; background for Xwayland windows | inside seat |
-| `pressKey` | foreground; background for Xwayland windows | background for keys the focused widget handles; Qt menu and action shortcuts need the active window, use `performSecondaryAction` | foreground; background for Xwayland windows | inside seat |
+| `pressKey` | foreground; background for Xwayland windows | background; the window is told it has focus for the keys, so toolkit shortcuts fire | foreground; background for Xwayland windows | inside seat |
 | `typeText` | foreground; background for Xwayland windows | background for characters the keyboard layout can produce; other text falls back to `paste` | foreground; background for Xwayland windows | inside seat |
-| `paste(text)` | foreground; the clipboard is replaced and restored 1.5 s later. Xwayland windows: background, using the X11 selection | background where the focused widget handles Ctrl+V; the clipboard is replaced and restored | foreground, clipboard replaced and restored. Xwayland windows: background, using the X11 selection | inside seat, private clipboard |
+| `paste(text)` | foreground; the clipboard is replaced and restored 1.5 s later. Xwayland windows: background, using the X11 selection | background; the clipboard is replaced and restored | foreground, clipboard replaced and restored. Xwayland windows: background, using the X11 selection | inside seat, private clipboard |
 | `paste` with `format: "md"` or `"html"` | unsupported | unsupported | unsupported | unsupported |
 | `setValue`, `selectText`, `performSecondaryAction` | background where the toolkit exposes them | same | same | same |
 | Xwayland windows on a Wayland session | background input over `DISPLAY` | not applicable | background input over `DISPLAY`, best effort | same as KDE Wayland |
@@ -93,16 +93,22 @@ accessibility actions remain the background option on those backends.
 ## Toolkit notes for window-targeted input
 
 Synthetic events are handed to the toolkit, and each toolkit decides what
-to do with them:
+to do with them. Chords press their modifier keys like a physical keyboard
+and every event carries the modifier state, so toolkits that track the
+modifier keys themselves (Blender) and toolkits that read the state field
+(Qt) agree. Around each action the window is told that it has focus and
+afterwards that it lost it again, so toolkits that act only in the focused
+window behave as if it were active while the real focus stays where it is:
 
-- Qt 5 and 6 accept synthetic key and button events. Text entry, widget
-  shortcuts and clicks work; keys are routed to the widget the window last
-  focused, so click a field before typing into it. Shortcuts bound to
-  actions and menus (`QAction`) only fire in the active window; use
-  `performSecondaryAction` or the menu's accessibility actions instead. Qt
-  ignores synthetic wheel button events whenever the X server offers
-  XInput 2.1 or later, which Xorg and Xwayland do, so `scroll` has no
-  effect on Qt windows in the background.
+- Qt 5 and 6 accept synthetic key and button events. Text entry, clicks
+  and shortcuts bound to actions and menus (`QAction`) work, because Qt
+  believes the window focused for the duration of the action; without
+  that, a click makes Qt ask the window manager to activate the window,
+  which moves the real focus. Keys go to the widget the window last
+  focused, so click a field before typing into it. Qt ignores synthetic
+  wheel button events whenever the X server offers XInput 2.1 or later,
+  which Xorg and Xwayland do, so `scroll` has no effect on Qt windows in
+  the background.
 - GTK 3 is expected to accept synthetic core events; this has not been
   verified here.
 - GTK 4 handles only XInput 2 device events and is expected to ignore
@@ -113,6 +119,14 @@ to do with them:
 - A window that the window manager decorates receives input only inside
   its client area; points on the title bar or borders are rejected before
   anything is sent.
+
+A window that a modal dialog of the same application blocks is refused
+with `blocked_window`, because Qt answers focus events on a blocked window
+by activating the dialog for real. The engine acts on the application's
+active window, else on the window it last observed, so a dialog that opens
+while the application is in the background is not selected until the user
+or the window manager activates it; the blocked window takes input again
+once the dialog is closed.
 
 When targeted delivery does not reach an application, the accessibility
 actions and the foreground path on a virtual seat remain available.
@@ -161,6 +175,9 @@ do:
 - `screenshot`, `input` and `windows` name the drivers in use, and
   `accessibility` reports whether the AT-SPI bus is reachable.
 
-Each window in `getState().windows` carries `client_protocol`: `"x11"`
-means the window takes background input on a Wayland session, `"wayland"`
-means it takes the foreground path.
+Each window in `getState().windows` carries `client_protocol` when the
+backend can tell: X11 sessions report `"x11"`. KWin's scripting API and the
+GNOME extension do not report the client type of a window, so on Wayland
+sessions the field is `null` and the driver decides per action by looking
+the window's process up in the Xwayland client list. A window found there
+takes background input; any other takes the foreground path.
