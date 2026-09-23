@@ -108,6 +108,52 @@ pub trait InputDriver: Send + Sync {
     async fn key(&self, keys: Vec<crate::platform::keymap::Chord>) -> Result<(), ToolError>;
 }
 
+/// Window-addressed input. Events go to the client that owns the window:
+/// the window is never activated and the real pointer never moves. Only X11
+/// clients can be addressed (X11 sessions, Xwayland windows on Wayland
+/// sessions); `resolve` says whether a window qualifies. Coordinates are
+/// desktop pixels, exactly like `InputDriver`.
+#[async_trait::async_trait]
+pub trait TargetedInputDriver: Send + Sync {
+    fn id(&self) -> &'static str;
+    async fn probe(&self) -> Probe;
+    /// The X11 window behind `window`, or `None` when this driver cannot
+    /// address it (a native Wayland client).
+    async fn resolve(&self, window: &WindowInfo) -> Result<Option<Ref>, ToolError>;
+    /// `count` presses at (x, y), paced inside the toolkit's double-click
+    /// interval. The point must lie inside the window's client area.
+    async fn click(
+        &self,
+        target: &Ref,
+        x: i32,
+        y: i32,
+        button: Button,
+        count: u32,
+    ) -> Result<(), ToolError>;
+    /// Same contract as `InputDriver::drag`; the first point must lie inside
+    /// the window's client area.
+    async fn drag(
+        &self,
+        target: &Ref,
+        path: Vec<(i32, i32)>,
+        button: Button,
+        dwell_ms: u64,
+        step_ms: u64,
+    ) -> Result<(), ToolError>;
+    async fn scroll(&self, target: &Ref, x: i32, y: i32, dx: i32, dy: i32)
+    -> Result<(), ToolError>;
+    /// Literal text only; characters the keymap cannot produce fail with
+    /// `unsupported` before anything is sent.
+    async fn type_text(&self, target: &Ref, text: String) -> Result<(), ToolError>;
+    /// Named keys/chords only, each held for `hold`.
+    async fn key(
+        &self,
+        target: &Ref,
+        keys: Vec<crate::platform::keymap::Chord>,
+        hold: std::time::Duration,
+    ) -> Result<(), ToolError>;
+}
+
 #[async_trait::async_trait]
 pub trait WindowDriver: Send + Sync {
     fn id(&self) -> &'static str;

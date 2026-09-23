@@ -158,3 +158,34 @@ fn unavailable_symbols_fail_without_a_us_fallback() {
     assert!(keyboard("us").literal('é').is_err());
     assert!(Keyboard::from_text("not an XKB keymap".into(), NativeState::default()).is_err());
 }
+
+#[test]
+fn event_state_masks_follow_core_modifier_bits() {
+    let map = map("us,de", "");
+    let caps = 1 << map.mod_get_index(xkb::MOD_NAME_CAPS);
+    let keyboard = Keyboard::new(map.clone(), NativeState::default());
+    let keys = keyboard
+        .modifiers(&[Modifier::Ctrl, Modifier::Shift])
+        .unwrap();
+    assert_eq!(keyboard.mask(&keys), 0x5);
+    assert_eq!(keyboard.mask(&[]), 0);
+    let stroke = keyboard.chord(&parse_chord("Ctrl+?").unwrap()).unwrap();
+    assert_eq!(keyboard.mask(&stroke.modifiers), 0x5);
+    let locked = Keyboard::new(
+        map.clone(),
+        NativeState {
+            depressed: 1 << map.mod_get_index(xkb::MOD_NAME_CTRL),
+            locked: caps,
+            group: 1,
+            ..Default::default()
+        },
+    )
+    .ignoring_held();
+    assert_eq!(locked.mask(&[]), caps as u16 | (1 << 13));
+    let stroke = locked.chord(&parse_chord("Ctrl+Z").unwrap()).unwrap();
+    assert_eq!(stroke.modifiers.len(), 1, "held Ctrl is ignored");
+    assert_eq!(
+        locked.mask(&stroke.modifiers),
+        0x4 | caps as u16 | (1 << 13)
+    );
+}

@@ -89,6 +89,28 @@ impl Keyboard {
         }
     }
 
+    /// Forget modifiers the user is physically holding. Synthetic events sent
+    /// straight to a window describe their own modifiers in the `state`
+    /// field, so strokes must be resolved against the locked state alone.
+    pub fn ignoring_held(mut self) -> Self {
+        self.native.depressed = 0;
+        self.native.latched = 0;
+        self
+    }
+
+    /// Core-protocol `state` for an event that holds `keys` (modifier
+    /// keycodes of a `Stroke`) on top of the locked modifiers: XKB real
+    /// modifiers 0..7 are the core masks Shift, Lock, Control and Mod1..Mod5,
+    /// and bits 13..14 carry the effective layout group.
+    pub fn mask(&self, keys: &[u32]) -> u16 {
+        let held = self
+            .momentary
+            .iter()
+            .filter(|(key, _)| keys.contains(key))
+            .fold(self.native.locked, |mask, (_, bits)| mask | bits);
+        ((held & 0xff) | ((self.native.group & 3) << 13)) as u16
+    }
+
     fn state_with(&self, keys: &[u32]) -> xkb::State {
         let mut state = self.native.apply(&self.keymap);
         for &key in keys {

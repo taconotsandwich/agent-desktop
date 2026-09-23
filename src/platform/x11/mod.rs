@@ -1,9 +1,13 @@
 mod input;
 mod keyboard;
 mod screenshot;
+mod targeted;
+#[cfg(test)]
+mod testing;
 mod windows;
 pub use input::X11Input;
 pub use screenshot::X11Shot;
+pub use targeted::X11Targeted;
 pub use windows::X11Windows;
 
 use crate::error::BackendError;

@@ -29,7 +29,7 @@ use x11rb::{
 
 pub struct X11Input;
 
-fn button_code(button: Button) -> u8 {
+pub(super) fn button_code(button: Button) -> u8 {
     match button {
         Button::Left => 1,
         Button::Middle => 2,
