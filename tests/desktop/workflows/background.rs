@@ -128,12 +128,13 @@ async fn capabilities(client: &mut Joiner) -> Result<Value> {
 /// Clicks Krita's width field at coordinates derived from its accessibility
 /// bounds and the dialog screenshot, selects the text and types a new size
 /// while Blender stays the active window; the pointer never has to visit
-/// the dialog. The dialog must be a `protocol` client.
+/// the dialog. The dialog must not be a native Wayland window: X11 sessions
+/// report `x11`, and a Wayland compositor either reports `x11` for an
+/// Xwayland window or nothing at all, as KWin does.
 async fn edit_by_coordinates(
     seat: &Seat,
     client: &mut Joiner,
     capabilities: &Value,
-    protocol: &str,
     record: &str,
 ) -> Result<()> {
     client
@@ -142,8 +143,8 @@ async fn edit_by_coordinates(
     new_krita_document(client, "krita").await?;
     let state = client.json("await krita.getAXState();").await?;
     anyhow::ensure!(
-        state["window"]["client_protocol"] == protocol,
-        "Krita's dialog is an {protocol} window: {}",
+        state["window"]["client_protocol"] != "wayland",
+        "Krita's dialog is not a native Wayland window: {}",
         state["window"]
     );
     let bbox: [f64; 4] = serde_json::from_value(dimension_control(&state)?["bbox"].clone())
@@ -205,14 +206,7 @@ async fn qa_background_coordinate_input() -> Result<()> {
         capabilities["coordinateInput"] == "window",
         "X11 seat addresses windows: {capabilities}"
     );
-    edit_by_coordinates(
-        &seat,
-        &mut client,
-        &capabilities,
-        "x11",
-        "background-coordinate",
-    )
-    .await?;
+    edit_by_coordinates(&seat, &mut client, &capabilities, "background-coordinate").await?;
     client.close().await?;
     Ok(())
 }
@@ -243,14 +237,7 @@ async fn qa_background_xwayland_input() -> Result<()> {
             && capabilities["targetedClients"] == "xwayland",
         "Wayland seat targets Xwayland clients only: {capabilities}"
     );
-    edit_by_coordinates(
-        &seat,
-        &mut client,
-        &capabilities,
-        "x11",
-        "background-xwayland",
-    )
-    .await?;
+    edit_by_coordinates(&seat, &mut client, &capabilities, "background-xwayland").await?;
     client.close().await?;
     Ok(())
 }
