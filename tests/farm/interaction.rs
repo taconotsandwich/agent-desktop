@@ -53,7 +53,8 @@ async fn exercise(
         applications.join("org.kde.konsole.desktop"),
         "[Desktop Entry]\nType=Application\nName=Konsole\nExec=konsole --separate --platform wayland\n",
     )?;
-    let mut client = mcp::Joiner::spawn(&server_bin(), env, &artifacts.join("server.log")).await?;
+    let mut client =
+        mcp::Joiner::spawn(&server_bin(), env, &artifacts.join("server.log"), &[]).await?;
     let desktop = client.json("await agentdesktop.getState();").await?;
     ensure!(
         desktop["capabilities"]["input"] == "kwin-eis",

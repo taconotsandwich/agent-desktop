@@ -199,6 +199,7 @@ async fn farm_servers_capture_blender_without_qa_permission_setup() -> Result<()
             if index == 0 { &original } else { &relocated },
             seat["env_file"].as_str().context("seat environment")?,
             &artifacts.join(format!("seat-{index}.log")),
+            &[],
         )
         .await?;
         let state = client

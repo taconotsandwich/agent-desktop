@@ -3,7 +3,7 @@ use crate::request::{Operation, Request};
 use crate::{
     desktop::accessibility::{self as a11y, FlatElement},
     error::fail,
-    platform::drivers::{Button, Ref, TargetedInputDriver},
+    platform::drivers::{Button, Ref, SessionType, TargetedInputDriver},
     platform::keymap::parse_chord,
     types::ToolError,
 };
@@ -240,7 +240,16 @@ impl Engine {
         if route.is_none() {
             self.focus(id).await?;
         }
-        let clipboard = crate::desktop::clipboard::Clipboard::replace(self.session, text).await?;
+        // A targeted window is an X11 client and pastes from the X11
+        // selection, which the compositor only bridges from the Wayland
+        // clipboard while an Xwayland window is active: serve the text there
+        // directly, and the Wayland clipboard stays untouched while a native
+        // window is active.
+        let session = match route {
+            Some(_) => SessionType::X11,
+            None => self.session,
+        };
+        let clipboard = crate::desktop::clipboard::Clipboard::replace(session, text).await?;
         let input = match &route {
             Some((driver, target)) => driver.key(target, vec![chord], TARGETED_HOLD).await,
             None => self.registry.input()?.key(vec![chord]).await,

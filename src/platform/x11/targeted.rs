@@ -9,7 +9,11 @@
 //! its modifiers in the `state` field, which toolkits such as Qt use to
 //! rebuild a keyboard state for synthetic events.
 
-use super::{X11, connection, failed, input::button_code, windows::window_of};
+use super::{
+    X11, connection, failed,
+    input::button_code,
+    windows::{client_of, window_of},
+};
 use crate::{
     error::BackendError,
     platform::{
@@ -542,12 +546,26 @@ impl TargetedInputDriver for X11Targeted {
         }
     }
 
+    /// X11 refs address their window directly. A compositor window is
+    /// addressable only when an Xwayland client backs it: the client with
+    /// the window's process, told apart from its siblings by title.
+    /// Coordinates pass through unchanged, which assumes the compositor
+    /// scales Xwayland (the Plasma 6 and GNOME default) so X11 and logical
+    /// coordinates agree.
     async fn resolve(&self, window: &WindowInfo) -> Result<Option<Ref>, ToolError> {
-        Ok(window
-            .window_ref
-            .0
-            .starts_with("x11:")
-            .then(|| window.window_ref.clone()))
+        if window.window_ref.0.starts_with("x11:") {
+            return Ok(Some(window.window_ref.clone()));
+        }
+        let Some(pid) = window
+            .pid
+            .filter(|_| window.client_protocol.as_deref() != Some("wayland"))
+        else {
+            return Ok(None);
+        };
+        let x11 = connection().map_err(|error| error.tool(false))?;
+        Ok(client_of(&x11, pid, &window.title)
+            .map_err(|error| error.tool(true))?
+            .map(|client| Ref(format!("x11:0x{client:08x}"))))
     }
 
     async fn click(

@@ -140,6 +140,17 @@ fn cardinal_property(
     Ok(reply.value32().and_then(|mut values| values.next()))
 }
 
+fn window_title(x11: &X11, atoms: &Atoms, window: Window) -> Result<Option<String>, BackendError> {
+    Ok(
+        string_property(x11, window, atoms.net_wm_name, atoms.utf8_string)?.or(string_property(
+            x11,
+            window,
+            atoms.wm_name,
+            AtomEnum::STRING.into(),
+        )?),
+    )
+}
+
 fn window_list(x11: &X11, atoms: &Atoms) -> Result<Vec<Window>, BackendError> {
     let reply = x11
         .connection
@@ -158,6 +169,31 @@ fn window_list(x11: &X11, atoms: &Atoms) -> Result<Vec<Window>, BackendError> {
         .value32()
         .map(|values| values.collect())
         .unwrap_or_default())
+}
+
+/// Xwayland client behind a compositor window: the client advertising the
+/// window's process and, when that process has several windows, the one
+/// carrying its title. Windows that vanish mid-enumeration are skipped like
+/// in `query`.
+pub(super) fn client_of(x11: &X11, pid: u32, title: &str) -> Result<Option<Window>, BackendError> {
+    let atoms = atoms(x11)?;
+    let candidates: Vec<Window> = window_list(x11, atoms)?
+        .into_iter()
+        .filter(|&window| {
+            cardinal_property(x11, window, atoms.net_wm_pid)
+                .ok()
+                .flatten()
+                == Some(pid)
+        })
+        .collect();
+    let titled = candidates
+        .iter()
+        .copied()
+        .find(|&window| window_title(x11, atoms, window).ok().flatten().as_deref() == Some(title));
+    Ok(titled.or(match candidates.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }))
 }
 
 fn active_window(x11: &X11, atoms: &Atoms) -> Result<Option<Window>, BackendError> {
@@ -206,14 +242,7 @@ fn window_info(
     ) {
         return Ok(None);
     }
-    let title = string_property(x11, window, atoms.net_wm_name, atoms.utf8_string)?
-        .or(string_property(
-            x11,
-            window,
-            atoms.wm_name,
-            AtomEnum::STRING.into(),
-        )?)
-        .unwrap_or_default();
+    let title = window_title(x11, atoms, window)?.unwrap_or_default();
     let class = string_property(x11, window, atoms.wm_class, AtomEnum::STRING.into())?
         .and_then(|raw| raw.split('\0').nth(1).map(str::to_owned))
         .unwrap_or_default();

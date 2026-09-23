@@ -12,6 +12,7 @@ async fn qa_application_discovery() -> Result<()> {
         &server_bin(),
         &seat.env_file,
         &seat.artifacts.join("server.log"),
+        &[],
     )
     .await?;
     let state = client.json("await agentdesktop.getState();").await?;

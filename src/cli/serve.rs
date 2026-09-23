@@ -58,6 +58,10 @@ pub(super) async fn serve(
             }
             shots.push(Arc::new(PortalShot::new(bus.clone())));
             inputs.push(Arc::new(EisInput::new(PortalConnector::new(bus))));
+            // Xwayland clients take window-targeted input over DISPLAY.
+            if std::env::var_os("DISPLAY").is_some() {
+                targeted.push(Arc::new(X11Targeted::default()));
+            }
         }
     }
     let registry = Registry::probe(shots, inputs, windows, targeted).await;

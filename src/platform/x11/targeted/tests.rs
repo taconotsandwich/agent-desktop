@@ -46,6 +46,88 @@ async fn only_x11_window_refs_resolve_without_a_display() {
             .unwrap(),
         None
     );
+    let mut anonymous = info("kwin:12", Some("x11"));
+    anonymous.pid = None;
+    assert_eq!(driver.resolve(&anonymous).await.unwrap(), None);
+}
+
+#[tokio::test]
+#[ignore = "requires Xvfb; creates and removes its own X11 server"]
+async fn compositor_windows_map_to_xwayland_clients_by_process_then_title() {
+    let (_server, _display, x11, first) = testing::server();
+    let atom = |name: &[u8]| {
+        x11.connection
+            .intern_atom(false, name)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom
+    };
+    let (client_list, wm_pid, wm_name, utf8) = (
+        atom(b"_NET_CLIENT_LIST"),
+        atom(b"_NET_WM_PID"),
+        atom(b"_NET_WM_NAME"),
+        atom(b"UTF8_STRING"),
+    );
+    let second = x11.connection.generate_id().unwrap();
+    x11.connection
+        .create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            second,
+            x11.root,
+            0,
+            0,
+            10,
+            10,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    for (window, title) in [(first, "Untitled"), (second, "Second")] {
+        x11.connection
+            .change_property32(
+                PropMode::REPLACE,
+                window,
+                wm_pid,
+                AtomEnum::CARDINAL,
+                &[4242],
+            )
+            .unwrap();
+        x11.connection
+            .change_property8(PropMode::REPLACE, window, wm_name, utf8, title.as_bytes())
+            .unwrap();
+    }
+    let clients = |windows: &[Window]| {
+        x11.connection
+            .change_property32(
+                PropMode::REPLACE,
+                x11.root,
+                client_list,
+                AtomEnum::WINDOW,
+                windows,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+    };
+    clients(&[first, second]);
+    assert_eq!(client_of(&x11, 4242, "Second").unwrap(), Some(second));
+    assert_eq!(
+        client_of(&x11, 4242, "Third").unwrap(),
+        None,
+        "two windows and neither carries the title"
+    );
+    assert_eq!(client_of(&x11, 4243, "Untitled").unwrap(), None);
+    clients(&[first]);
+    assert_eq!(
+        client_of(&x11, 4242, "Untitled <2>").unwrap(),
+        Some(first),
+        "the only window of the process"
+    );
 }
 
 #[tokio::test]

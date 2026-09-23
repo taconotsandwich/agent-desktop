@@ -9,6 +9,7 @@ async fn qa_krita_workflow() -> Result<()> {
         &server_bin(),
         &seat.env_file,
         &seat.artifacts.join("server.log"),
+        &[],
     )
     .await?;
     client

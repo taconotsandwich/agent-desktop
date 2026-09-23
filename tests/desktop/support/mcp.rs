@@ -13,13 +13,20 @@ pub struct Joiner {
     ownership: String,
 }
 impl Joiner {
-    pub async fn spawn(bin: &Path, env: &str, log: &Path) -> Result<Self> {
+    /// `environment` reaches the server and every application it launches.
+    pub async fn spawn(
+        bin: &Path,
+        env: &str,
+        log: &Path,
+        environment: &[(&str, &str)],
+    ) -> Result<Self> {
         let mut command = tokio::process::Command::new(bin);
         let ownership = uuid::Uuid::new_v4().to_string();
         command
             .arg("--join-seat")
             .arg(env)
             .env("AGENT_DESKTOP_QA_OWNER", &ownership)
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(std::fs::File::create(log)?))
