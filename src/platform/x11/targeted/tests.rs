@@ -9,6 +9,30 @@ fn drain(x11: &X11) -> Vec<Event> {
     events
 }
 
+/// A mapped top-level window of the test connection.
+fn top_level(x11: &X11, x: i16, y: i16, width: u16, height: u16) -> Window {
+    let window = x11.connection.generate_id().unwrap();
+    x11.connection
+        .create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            window,
+            x11.root,
+            x,
+            y,
+            width,
+            height,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    x11.connection.map_window(window).unwrap().check().unwrap();
+    window
+}
+
 fn info(window_ref: &str, client_protocol: Option<&str>) -> WindowInfo {
     WindowInfo {
         window_ref: Ref(window_ref.into()),
@@ -135,25 +159,7 @@ async fn compositor_windows_map_to_xwayland_clients_by_process_then_title() {
 async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
     let (_server, display, x11, focused) = testing::server();
     testing::layout(&display, "us", "");
-    let target = x11.connection.generate_id().unwrap();
-    x11.connection
-        .create_window(
-            x11rb::COPY_DEPTH_FROM_PARENT,
-            target,
-            x11.root,
-            100,
-            50,
-            300,
-            200,
-            0,
-            WindowClass::INPUT_OUTPUT,
-            0,
-            &CreateWindowAux::new(),
-        )
-        .unwrap()
-        .check()
-        .unwrap();
-    x11.connection.map_window(target).unwrap().check().unwrap();
+    let target = top_level(&x11, 100, 50, 300, 200);
     let target_ref = Ref(format!("x11:0x{target:08x}"));
     let driver = X11Targeted::default();
     let pointer = x11
@@ -328,4 +334,36 @@ async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
         .unwrap();
     assert_eq!((pointer.root_x, pointer.root_y), pointer_before);
     assert_eq!(focus(), focused);
+}
+
+#[tokio::test]
+#[ignore = "requires Xvfb; creates and removes its own X11 server"]
+async fn a_window_closed_by_a_press_still_takes_its_release() {
+    let (_server, _display, x11, _focused) = testing::server();
+    let target = top_level(&x11, 100, 50, 300, 200);
+    let clock = Clock::sample(&x11).await.unwrap();
+    let mut sender = Sender::new(&x11, clock, target, 0).unwrap();
+    sender.press_key(38).unwrap();
+    x11.connection
+        .destroy_window(target)
+        .unwrap()
+        .check()
+        .unwrap();
+    sender.release_key(38).unwrap();
+    assert!(sender.held_keys.is_empty());
+    let error = undelivered(sender.press_key(38).unwrap_err());
+    assert_eq!(error.code, "stale_window", "{}", error.message);
+    drop(sender);
+
+    // The driver notices before it sends anything.
+    let error = X11Targeted::default()
+        .key_in(
+            &x11,
+            &Ref(format!("x11:0x{target:08x}")),
+            &[parse_chord("a").unwrap()],
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "stale_window", "{}", error.message);
 }

@@ -16,7 +16,7 @@ use super::{
     windows::{client_of, window_of},
 };
 use crate::{
-    error::BackendError,
+    error::{BackendError, fail},
     platform::{
         drivers::{Button, Probe, Ref, TargetedInputDriver, WindowInfo},
         keyboard::{Keyboard, Stroke},
@@ -30,8 +30,9 @@ use std::{
 };
 use x11rb::{
     connection::Connection as _,
+    errors::ReplyError,
     protocol::{
-        Event,
+        ErrorKind, Event,
         xproto::{
             AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ButtonPressEvent,
             ChangeWindowAttributesAux, ConnectionExt as _, CreateWindowAux, EventMask,
@@ -132,6 +133,37 @@ struct Frame {
     state: KeyButMask,
 }
 
+/// `BadWindow`, or `BadDrawable` from a geometry request, means the
+/// destination is gone; anything else is a backend failure.
+fn classify(window: Window, error: ReplyError) -> BackendError {
+    match error {
+        ReplyError::X11Error(error)
+            if matches!(error.error_kind, ErrorKind::Window | ErrorKind::Drawable) =>
+        {
+            BackendError::StaleHandle(format!("window 0x{window:x} no longer exists"))
+        }
+        error => failed(error),
+    }
+}
+
+/// A release that finds the window gone is complete: the press it ends was
+/// delivered, and the client closed the window in response, the way a
+/// dialog closes on Escape.
+fn gone_is_released(error: BackendError) -> Result<(), BackendError> {
+    match error {
+        BackendError::StaleHandle(_) => Ok(()),
+        error => Err(error),
+    }
+}
+
+/// Tool error for a press, motion or window lookup that did not go out.
+fn undelivered(error: BackendError) -> ToolError {
+    match error {
+        BackendError::StaleHandle(detail) => fail("stale_window", detail),
+        error => error.tool(true),
+    }
+}
+
 /// One dispatch against one window. Whatever is still pressed when the
 /// dispatch fails midway is released on drop.
 struct Sender {
@@ -161,13 +193,13 @@ impl Sender {
             .get_geometry(window)
             .map_err(failed)?
             .reply()
-            .map_err(failed)?;
+            .map_err(|error| classify(window, error))?;
         let origin = x11
             .connection
             .translate_coordinates(window, x11.root, 0, 0)
             .map_err(failed)?
             .reply()
-            .map_err(failed)?;
+            .map_err(|error| classify(window, error))?;
         let origin = (origin.dst_x as i32, origin.dst_y as i32);
         Ok(Self {
             x11: x11.clone(),
@@ -225,7 +257,7 @@ impl Sender {
             .send_event(false, self.window, EventMask::NO_EVENT, event)
             .map_err(failed)?
             .check()
-            .map_err(failed)?;
+            .map_err(|error| classify(self.window, error))?;
         self.x11.connection.flush().map_err(failed)
     }
 
@@ -301,9 +333,8 @@ impl Sender {
         // `state` describes the buttons held before the event, so the
         // released button is still part of it.
         let event = self.button_event(BUTTON_RELEASE_EVENT, button)?;
-        self.send(event)?;
         self.held_buttons.retain(|held| *held != button);
-        Ok(())
+        self.send(event).or_else(gone_is_released)
     }
 
     fn press_key(&mut self, keycode: u8) -> Result<(), BackendError> {
@@ -314,14 +345,12 @@ impl Sender {
 
     fn release_key(&mut self, keycode: u8) -> Result<(), BackendError> {
         let event = self.key_event(KEY_RELEASE_EVENT, keycode)?;
-        self.send(event)?;
         self.held_keys.retain(|held| *held != keycode);
-        Ok(())
+        self.send(event).or_else(gone_is_released)
     }
 
     async fn click(&mut self, button: u8) -> Result<(), ToolError> {
-        self.press_button(button)
-            .map_err(|error| error.tool(true))?;
+        self.press_button(button).map_err(undelivered)?;
         tokio::time::sleep(Duration::from_millis(30)).await;
         self.release_button(button)
             .map_err(|error| error.tool(true))
@@ -335,7 +364,7 @@ impl Sender {
     async fn stroke(&mut self, keys: &[(u8, u16)], hold: Duration) -> Result<(), ToolError> {
         let base = self.modifiers;
         for &(keycode, down) in keys {
-            self.press_key(keycode).map_err(|error| error.tool(true))?;
+            self.press_key(keycode).map_err(undelivered)?;
             self.modifiers = down;
         }
         tokio::time::sleep(hold).await;
@@ -414,7 +443,7 @@ impl X11Targeted {
             .map_err(|error| error.tool(false))?
             .ignoring_held()
             .mask(&[]);
-        Sender::new(x11, clock, window, modifiers).map_err(|error| error.tool(false))
+        Sender::new(x11, clock, window, modifiers).map_err(undelivered)
     }
 
     async fn click_in(
@@ -430,7 +459,7 @@ impl X11Targeted {
         sender
             .require_inside(x, y)
             .map_err(|error| error.tool(false))?;
-        sender.motion(x, y).map_err(|error| error.tool(true))?;
+        sender.motion(x, y).map_err(undelivered)?;
         for index in 0..count.max(1) {
             if index > 0 {
                 // Well inside Qt's 400 ms double-click interval.
@@ -458,20 +487,16 @@ impl X11Targeted {
             .require_inside(start.0, start.1)
             .map_err(|error| error.tool(false))?;
         let button = button_code(button);
-        sender
-            .motion(start.0, start.1)
-            .map_err(|error| error.tool(true))?;
+        sender.motion(start.0, start.1).map_err(undelivered)?;
         tokio::time::sleep(Duration::from_millis(100)).await;
-        sender
-            .press_button(button)
-            .map_err(|error| error.tool(true))?;
+        sender.press_button(button).map_err(undelivered)?;
         tokio::time::sleep(Duration::from_millis(dwell_ms)).await;
         let mut previous = *start;
         for &(end_x, end_y) in rest {
             for step in 1..=10 {
                 let x = previous.0 + (end_x - previous.0) * step / 10;
                 let y = previous.1 + (end_y - previous.1) * step / 10;
-                sender.motion(x, y).map_err(|error| error.tool(true))?;
+                sender.motion(x, y).map_err(undelivered)?;
                 tokio::time::sleep(Duration::from_millis(step_ms)).await;
             }
             previous = (end_x, end_y);
@@ -494,7 +519,7 @@ impl X11Targeted {
         sender
             .require_inside(x, y)
             .map_err(|error| error.tool(false))?;
-        sender.motion(x, y).map_err(|error| error.tool(true))?;
+        sender.motion(x, y).map_err(undelivered)?;
         // Buttons 4/5/6/7 = up/down/left/right, one click per 120-unit notch.
         for (delta, negative, positive) in [(dx, 6u8, 7u8), (dy, 4u8, 5u8)] {
             if delta == 0 {
@@ -502,9 +527,7 @@ impl X11Targeted {
             }
             let button = if delta < 0 { negative } else { positive };
             for _ in 0..delta.unsigned_abs().div_ceil(120).max(1) {
-                sender
-                    .press_button(button)
-                    .map_err(|error| error.tool(true))?;
+                sender.press_button(button).map_err(undelivered)?;
                 sender
                     .release_button(button)
                     .map_err(|error| error.tool(true))?;
