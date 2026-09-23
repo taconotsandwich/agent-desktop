@@ -99,6 +99,9 @@ SESSION
         if [[ -z ${QA_PACKAGES_DIR:-} ]]; then
             cp -a /work/packaging/gnome/agent-desktop@local "$XDG_DATA_HOME/gnome-shell/extensions/"
         fi
+        # A first session opens the Shell's welcome dialog, a modal that swallows every
+        # key until it is dismissed; record the running version as already shown.
+        gsettings set org.gnome.shell welcome-dialog-last-shown-version "$(gnome-shell --version | awk '{print $NF}')"
         gsettings set org.gnome.shell enabled-extensions "['agent-desktop@local']"
         gnome-shell --headless --wayland --wayland-display="$WAYLAND_DISPLAY" --virtual-monitor=1800x1125 > /artifacts/compositor.log 2>&1 &
     fi
