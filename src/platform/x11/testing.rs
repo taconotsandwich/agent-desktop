@@ -3,7 +3,7 @@ use super::X11;
 use std::{
     io::{BufRead, BufReader},
     process::{Child, Command, Stdio},
-    sync::{Arc, mpsc},
+    sync::{Arc, OnceLock, mpsc},
     time::Duration,
 };
 use x11rb::{
@@ -86,6 +86,7 @@ pub(super) fn server() -> (Server, String, Arc<X11>, Window) {
             root,
             root_width: 800,
             root_height: 600,
+            atoms: OnceLock::new(),
         }),
         window,
     )

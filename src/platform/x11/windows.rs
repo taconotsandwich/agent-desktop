@@ -11,7 +11,6 @@ use crate::{
     platform::drivers::{Bbox, Probe, Ref, WindowDriver, WindowInfo},
     types::ToolError,
 };
-use std::sync::OnceLock;
 use x11rb::{
     connection::Connection as _,
     protocol::xproto::{Atom, AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, Window},
@@ -22,7 +21,7 @@ fn root_event_mask() -> EventMask {
     EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY
 }
 
-struct Atoms {
+pub(super) struct Atoms {
     net_supported: Atom,
     net_client_list: Atom,
     net_active_window: Atom,
@@ -45,10 +44,10 @@ struct Atoms {
     wm_change_state: Atom,
 }
 
-static ATOMS: OnceLock<Atoms> = OnceLock::new();
-
-fn atoms(x11: &X11) -> Result<&'static Atoms, BackendError> {
-    if let Some(atoms) = ATOMS.get() {
+/// Atoms interned on first use; the ids belong to the server behind this
+/// connection.
+fn atoms(x11: &X11) -> Result<&Atoms, BackendError> {
+    if let Some(atoms) = x11.atoms.get() {
         return Ok(atoms);
     }
     let intern = |name: &str| -> Result<Atom, BackendError> {
@@ -82,8 +81,8 @@ fn atoms(x11: &X11) -> Result<&'static Atoms, BackendError> {
         net_moveresize_window: intern("_NET_MOVERESIZE_WINDOW")?,
         wm_change_state: intern("WM_CHANGE_STATE")?,
     };
-    let _ = ATOMS.set(atoms);
-    Ok(ATOMS.get().expect("atoms are initialized"))
+    let _ = x11.atoms.set(atoms);
+    Ok(x11.atoms.get().expect("atoms are initialized"))
 }
 
 pub(super) fn window_of(window_ref: &Ref) -> Result<Window, ToolError> {

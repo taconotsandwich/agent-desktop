@@ -30,6 +30,8 @@ pub(super) struct X11 {
     pub root: Window,
     pub root_width: u16,
     pub root_height: u16,
+    /// EWMH atoms, interned once per connection.
+    atoms: OnceLock<windows::Atoms>,
 }
 
 impl X11 {
@@ -53,6 +55,7 @@ impl X11 {
             root,
             root_width: geometry.width,
             root_height: geometry.height,
+            atoms: OnceLock::new(),
         })
     }
 }
