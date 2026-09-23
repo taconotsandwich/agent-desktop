@@ -1,15 +1,17 @@
 use super::*;
 use crate::platform::{drivers::Bbox, keymap::parse_chord, x11::testing};
+use std::ffi::CString;
 use x11rb::{
     connection::Connection as _,
     protocol::{
         Event,
         xproto::{
-            AtomEnum, ConnectionExt as _, CreateWindowAux, KeyButMask, PropMode, Window,
-            WindowClass,
+            AtomEnum, ConnectionExt as _, CreateWindowAux, FOCUS_IN_EVENT, FOCUS_OUT_EVENT,
+            InputFocus, KeyButMask, PropMode, Window, WindowClass,
         },
     },
     wrapper::ConnectionExt as _,
+    xcb_ffi::XCBConnection,
 };
 
 fn drain(x11: &X11) -> Vec<Event> {
@@ -18,6 +20,26 @@ fn drain(x11: &X11) -> Vec<Event> {
         events.push(event);
     }
     events
+}
+
+/// The events other than the focus bracket around a dispatch.
+fn input(events: Vec<Event>) -> Vec<Event> {
+    events
+        .into_iter()
+        .filter(|event| !matches!(event, Event::FocusIn(_) | Event::FocusOut(_)))
+        .collect()
+}
+
+/// The focus bracket: event type and window of each focus event, in order.
+fn focus_events(events: &[Event]) -> Vec<(u8, Window)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::FocusIn(focus) => Some((FOCUS_IN_EVENT, focus.event)),
+            Event::FocusOut(focus) => Some((FOCUS_OUT_EVENT, focus.event)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A mapped top-level window of the test connection.
@@ -196,7 +218,7 @@ async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
         .click_in(&x11, &target_ref, 150, 75, Button::Left, 2)
         .await
         .unwrap();
-    let events = drain(&x11);
+    let events = input(drain(&x11));
     assert_eq!(events.len(), 5, "{events:?}");
     let Event::MotionNotify(motion) = &events[0] else {
         panic!("{events:?}");
@@ -250,7 +272,7 @@ async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
             .unwrap();
         (stroke.modifiers[0], stroke.key)
     };
-    let keys: Vec<(bool, u32, bool)> = drain(&x11)
+    let keys: Vec<(bool, u32, bool)> = input(drain(&x11))
         .iter()
         .map(|event| match event {
             Event::KeyPress(press) => (
@@ -318,7 +340,7 @@ async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
     // A cancelled drag releases the button.
     assert!(
         tokio::time::timeout(
-            Duration::from_millis(150),
+            Duration::from_millis(400),
             driver.drag_in(
                 &x11,
                 &target_ref,
@@ -331,7 +353,7 @@ async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
         .await
         .is_err()
     );
-    let events = drain(&x11);
+    let events = input(drain(&x11));
     assert!(
         matches!(events.last(), Some(Event::ButtonRelease(release)) if release.detail == 1),
         "{events:?}"
@@ -377,4 +399,164 @@ async fn a_window_closed_by_a_press_still_takes_its_release() {
         .await
         .unwrap_err();
     assert_eq!(error.code, "stale_window", "{}", error.message);
+}
+
+#[tokio::test]
+#[ignore = "requires Xvfb; creates and removes its own X11 server"]
+async fn the_client_is_told_its_window_has_focus_for_the_dispatch() {
+    let (_server, display, x11, focused) = testing::server();
+    let target = top_level(&x11, 100, 50, 300, 200);
+    let target_ref = Ref(format!("x11:0x{target:08x}"));
+    let driver = X11Targeted::default();
+    let set_focus = |window: Window| {
+        x11.connection
+            .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+            .unwrap()
+            .check()
+            .unwrap();
+    };
+    let focus = || {
+        x11.connection
+            .get_input_focus()
+            .unwrap()
+            .reply()
+            .unwrap()
+            .focus
+    };
+    let click = || driver.click_in(&x11, &target_ref, 150, 75, Button::Left, 1);
+
+    // The real focus is on another window of the same client: the client
+    // sees the target focused for the click, then its own window again.
+    click().await.unwrap();
+    let events = drain(&x11);
+    assert_eq!(
+        focus_events(&events),
+        vec![
+            (FOCUS_IN_EVENT, target),
+            (FOCUS_OUT_EVENT, target),
+            (FOCUS_IN_EVENT, focused)
+        ]
+    );
+    assert_eq!(input(events).len(), 3);
+    assert_eq!(focus(), focused);
+
+    // A target that has the focus, directly or through a child, is left
+    // alone.
+    set_focus(target);
+    click().await.unwrap();
+    assert!(focus_events(&drain(&x11)).is_empty());
+    let child = x11.connection.generate_id().unwrap();
+    x11.connection
+        .create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            child,
+            target,
+            0,
+            0,
+            10,
+            10,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    x11.connection.map_window(child).unwrap().check().unwrap();
+    set_focus(child);
+    click().await.unwrap();
+    assert!(focus_events(&drain(&x11)).is_empty());
+
+    // Focus in another client: the target is told it lost the focus again
+    // and the real focus never moves.
+    let (other_client, _) =
+        XCBConnection::connect(Some(&CString::new(display.as_str()).unwrap())).unwrap();
+    let other = other_client.generate_id().unwrap();
+    other_client
+        .create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            other,
+            x11.root,
+            500,
+            300,
+            50,
+            50,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    other_client.map_window(other).unwrap().check().unwrap();
+    set_focus(other);
+    click().await.unwrap();
+    assert_eq!(
+        focus_events(&drain(&x11)),
+        vec![(FOCUS_IN_EVENT, target), (FOCUS_OUT_EVENT, target)]
+    );
+    assert_eq!(focus(), other);
+
+    // A modal window of the same client blocks the target before anything
+    // is sent; the modal window itself takes input.
+    let atom = |name: &[u8]| {
+        x11.connection
+            .intern_atom(false, name)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom
+    };
+    let dialog = top_level(&x11, 120, 60, 100, 80);
+    x11.connection
+        .change_property32(
+            PropMode::REPLACE,
+            dialog,
+            atom(b"_NET_WM_STATE"),
+            AtomEnum::ATOM,
+            &[atom(b"_NET_WM_STATE_MODAL")],
+        )
+        .unwrap();
+    x11.connection
+        .change_property8(
+            PropMode::REPLACE,
+            dialog,
+            atom(b"_NET_WM_NAME"),
+            atom(b"UTF8_STRING"),
+            b"Save?",
+        )
+        .unwrap();
+    x11.connection
+        .change_property32(
+            PropMode::REPLACE,
+            x11.root,
+            atom(b"_NET_CLIENT_LIST"),
+            AtomEnum::WINDOW,
+            &[target, dialog],
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    let error = click().await.unwrap_err();
+    assert_eq!(error.code, "blocked_window", "{}", error.message);
+    assert!(error.message.contains("\"Save?\""), "{}", error.message);
+    assert!(drain(&x11).is_empty());
+    driver
+        .click_in(
+            &x11,
+            &Ref(format!("x11:0x{dialog:08x}")),
+            150,
+            100,
+            Button::Left,
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        focus_events(&drain(&x11)),
+        vec![(FOCUS_IN_EVENT, dialog), (FOCUS_OUT_EVENT, dialog)]
+    );
+    assert_eq!(focus(), other);
 }

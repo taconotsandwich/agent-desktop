@@ -32,6 +32,7 @@ pub(super) struct Atoms {
     net_wm_pid: Atom,
     net_wm_state: Atom,
     net_wm_state_hidden: Atom,
+    net_wm_state_modal: Atom,
     net_wm_window_type: Atom,
     net_wm_window_type_normal: Atom,
     net_wm_window_type_dialog: Atom,
@@ -70,6 +71,7 @@ fn atoms(x11: &X11) -> Result<&Atoms, BackendError> {
         net_wm_pid: intern("_NET_WM_PID")?,
         net_wm_state: intern("_NET_WM_STATE")?,
         net_wm_state_hidden: intern("_NET_WM_STATE_HIDDEN")?,
+        net_wm_state_modal: intern("_NET_WM_STATE_MODAL")?,
         net_wm_window_type: intern("_NET_WM_WINDOW_TYPE")?,
         net_wm_window_type_normal: intern("_NET_WM_WINDOW_TYPE_NORMAL")?,
         net_wm_window_type_dialog: intern("_NET_WM_WINDOW_TYPE_DIALOG")?,
@@ -195,6 +197,30 @@ pub(super) fn client_of(x11: &X11, pid: u32, title: &str) -> Result<Option<Windo
     }))
 }
 
+/// Title of a modal window that the client owning `window` has open, which
+/// blocks input to the client's other windows. Windows of one client share
+/// the resource id base the server assigned it.
+pub(super) fn modal_sibling(x11: &X11, window: Window) -> Result<Option<String>, BackendError> {
+    let atoms = atoms(x11)?;
+    let client = |window: Window| window & !x11.connection.setup().resource_id_mask;
+    for candidate in window_list(x11, atoms)? {
+        if candidate == window || client(candidate) != client(window) {
+            continue;
+        }
+        let modal = atom_property(x11, candidate, atoms.net_wm_state)
+            .ok()
+            .is_some_and(|states| states.contains(&atoms.net_wm_state_modal));
+        if modal {
+            return Ok(Some(
+                window_title(x11, atoms, candidate)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| format!("0x{candidate:x}")),
+            ));
+        }
+    }
+    Ok(None)
+}
 fn active_window(x11: &X11, atoms: &Atoms) -> Result<Option<Window>, BackendError> {
     let reply = x11
         .connection

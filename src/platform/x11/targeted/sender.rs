@@ -2,7 +2,7 @@
 //! with, the event frames, and the release of whatever is still held when a
 //! dispatch fails midway.
 
-use super::super::{X11, failed};
+use super::super::{X11, failed, windows::modal_sibling};
 use crate::{
     error::{BackendError, fail},
     platform::keymap,
@@ -20,8 +20,9 @@ use x11rb::{
         xproto::{
             AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ButtonPressEvent,
             ChangeWindowAttributesAux, ConnectionExt as _, CreateWindowAux, EventMask,
-            KEY_PRESS_EVENT, KEY_RELEASE_EVENT, KeyButMask, KeyPressEvent, MOTION_NOTIFY_EVENT,
-            Motion, MotionNotifyEvent, PropMode, Timestamp, Window, WindowClass,
+            FOCUS_IN_EVENT, FOCUS_OUT_EVENT, FocusInEvent, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
+            KeyButMask, KeyPressEvent, MOTION_NOTIFY_EVENT, Motion, MotionNotifyEvent,
+            NotifyDetail, NotifyMode, PropMode, Timestamp, Window, WindowClass,
         },
     },
     wrapper::ConnectionExt as _,
@@ -143,6 +144,44 @@ pub(super) fn undelivered(error: BackendError) -> ToolError {
     }
 }
 
+/// What the client is told once the dispatch is over: that the window lost
+/// focus, or that the client's own window which really holds it has it back.
+enum Handback {
+    FocusOut,
+    FocusIn(Window),
+}
+
+fn focus_event(response_type: u8, window: Window) -> FocusInEvent {
+    FocusInEvent {
+        response_type,
+        detail: NotifyDetail::NONLINEAR,
+        sequence: 0,
+        event: window,
+        mode: NotifyMode::NORMAL,
+    }
+}
+
+/// Whether `focus` is `window` or one of its descendants. `NONE` and
+/// `POINTER_ROOT` are not windows.
+fn focused(x11: &X11, window: Window, mut focus: Window) -> Result<bool, BackendError> {
+    for _ in 0..64 {
+        if focus == window {
+            return Ok(true);
+        }
+        if focus <= 1 || focus == x11.root {
+            return Ok(false);
+        }
+        focus = match x11.connection.query_tree(focus).map_err(failed)?.reply() {
+            Ok(tree) => tree.parent,
+            Err(error) => match classify(focus, error) {
+                BackendError::StaleHandle(_) => return Ok(false),
+                error => return Err(error),
+            },
+        };
+    }
+    Ok(false)
+}
+
 /// One dispatch against one window. Whatever is still pressed when the
 /// dispatch fails midway is released on drop.
 pub(super) struct Sender {
@@ -158,6 +197,8 @@ pub(super) struct Sender {
     at: (i32, i32),
     pub(super) held_keys: Vec<u8>,
     held_buttons: Vec<u8>,
+    /// Set once the client was told its window has focus.
+    handback: Option<Handback>,
 }
 
 impl Sender {
@@ -190,6 +231,7 @@ impl Sender {
             at: origin,
             held_keys: Vec::new(),
             held_buttons: Vec::new(),
+            handback: None,
         })
     }
 
@@ -203,6 +245,61 @@ impl Sender {
             "({x}, {y}) is outside the window's client area, {width}x{height} at ({left}, {top}); \
              decorations belong to the window manager and cannot receive targeted input"
         )))
+    }
+
+    /// Tells the client its window has focus for the dispatch. Qt delivers
+    /// keys to the window it believes focused, fires a window's action
+    /// shortcuts only there, and asks the window manager to activate a
+    /// clicked window it believes unfocused, which would move the real
+    /// focus. A window that a modal window of the same client blocks is
+    /// refused instead: the client would relay the focus to the modal
+    /// window by activating it for real.
+    pub(super) async fn lend_focus(&mut self) -> Result<(), ToolError> {
+        let focus = self
+            .x11
+            .connection
+            .get_input_focus()
+            .map_err(failed)
+            .and_then(|cookie| cookie.reply().map_err(failed))
+            .map_err(|error| error.tool(true))?
+            .focus;
+        if focused(&self.x11, self.window, focus).map_err(|error| error.tool(true))? {
+            return Ok(());
+        }
+        if let Some(title) =
+            modal_sibling(&self.x11, self.window).map_err(|error| error.tool(true))?
+        {
+            return Err(fail(
+                "blocked_window",
+                format!(
+                    "The application's modal window {title:?} blocks input to this window \
+                     until it is closed"
+                ),
+            ));
+        }
+        self.send(focus_event(FOCUS_IN_EVENT, self.window))
+            .map_err(undelivered)?;
+        let mask = self.x11.connection.setup().resource_id_mask;
+        self.handback = Some(if focus > 1 && focus & !mask == self.window & !mask {
+            Handback::FocusIn(focus)
+        } else {
+            Handback::FocusOut
+        });
+        // The client applies the focus change when it has drained its event
+        // queue; a click read in the same batch would still find the old
+        // focus window.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        Ok(())
+    }
+
+    fn hand_back(&mut self) {
+        let Some(handback) = self.handback.take() else {
+            return;
+        };
+        let _ = self.send(focus_event(FOCUS_OUT_EVENT, self.window));
+        if let Handback::FocusIn(window) = handback {
+            let _ = self.send_to(window, focus_event(FOCUS_IN_EVENT, window));
+        }
     }
 
     fn state(&self) -> KeyButMask {
@@ -231,12 +328,16 @@ impl Sender {
     }
 
     fn send(&self, event: impl Into<[u8; 32]>) -> Result<(), BackendError> {
+        self.send_to(self.window, event)
+    }
+
+    fn send_to(&self, window: Window, event: impl Into<[u8; 32]>) -> Result<(), BackendError> {
         self.x11
             .connection
-            .send_event(false, self.window, EventMask::NO_EVENT, event)
+            .send_event(false, window, EventMask::NO_EVENT, event)
             .map_err(failed)?
             .check()
-            .map_err(|error| classify(self.window, error))?;
+            .map_err(|error| classify(window, error))?;
         self.x11.connection.flush().map_err(failed)
     }
 
@@ -374,5 +475,6 @@ impl Drop for Sender {
                 .button_event(BUTTON_RELEASE_EVENT, button)
                 .and_then(|event| self.send(event));
         }
+        self.hand_back();
     }
 }

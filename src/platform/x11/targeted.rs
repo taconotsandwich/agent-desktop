@@ -8,7 +8,11 @@
 //! `xdotool --window`. Chords press their modifier keys like a physical
 //! keyboard and every event carries the modifier state in its `state` field,
 //! so toolkits that track the modifier keys (Blender) and toolkits that
-//! rebuild the keyboard state from the field (Qt) agree.
+//! rebuild the keyboard state from the field (Qt) agree. Around the events
+//! the client is told that its window has focus and then that it lost it
+//! again: Qt fires a window's action shortcuts only while it believes the
+//! window focused, and asks the window manager to activate a clicked window
+//! it believes unfocused.
 
 mod sender;
 
@@ -102,6 +106,7 @@ impl X11Targeted {
         sender
             .require_inside(x, y)
             .map_err(|error| error.tool(false))?;
+        sender.lend_focus().await?;
         sender.motion(x, y).map_err(undelivered)?;
         for index in 0..count.max(1) {
             if index > 0 {
@@ -129,6 +134,7 @@ impl X11Targeted {
         sender
             .require_inside(start.0, start.1)
             .map_err(|error| error.tool(false))?;
+        sender.lend_focus().await?;
         let button = button_code(button);
         sender.motion(start.0, start.1).map_err(undelivered)?;
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -162,6 +168,7 @@ impl X11Targeted {
         sender
             .require_inside(x, y)
             .map_err(|error| error.tool(false))?;
+        sender.lend_focus().await?;
         sender.motion(x, y).map_err(undelivered)?;
         // Buttons 4/5/6/7 = up/down/left/right, one click per 120-unit notch.
         for (delta, negative, positive) in [(dx, 6u8, 7u8), (dy, 4u8, 5u8)] {
@@ -185,6 +192,7 @@ impl X11Targeted {
             text.chars().map(|ch| keyboard.literal(ch)).collect()
         })
         .map_err(|error| error.tool(false))?;
+        sender.lend_focus().await?;
         for keys in strokes {
             sender.stroke(&keys, Duration::from_millis(5)).await?;
         }
@@ -206,6 +214,7 @@ impl X11Targeted {
             keys.iter().map(|chord| keyboard.chord(chord)).collect()
         })
         .map_err(|error| error.tool(false))?;
+        sender.lend_focus().await?;
         for keys in strokes {
             sender.stroke(&keys, hold).await?;
         }
