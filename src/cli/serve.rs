@@ -3,7 +3,9 @@ use agent_desktop::{
     mcp::AgentDesktop,
     platform::{
         detect_desktop, detect_session,
-        drivers::{Desktop, InputDriver, SessionType, ShotDriver, WindowDriver},
+        drivers::{
+            Desktop, InputDriver, SessionType, ShotDriver, TargetedInputDriver, WindowDriver,
+        },
         gnome::{GnomeShot, GnomeWindows, MutterConnector},
         kde::{KwinConnector, KwinShot, KwinWindows},
         registry::Registry,
@@ -11,7 +13,7 @@ use agent_desktop::{
             eis::EisInput,
             portal::{PortalConnector, PortalShot},
         },
-        x11::{X11Input, X11Shot, X11Windows},
+        x11::{X11Input, X11Shot, X11Targeted, X11Windows},
     },
     runtime::Javascript,
 };
@@ -29,11 +31,13 @@ pub(super) async fn serve(
     let mut shots: Vec<Arc<dyn ShotDriver>> = Vec::new();
     let mut inputs: Vec<Arc<dyn InputDriver>> = Vec::new();
     let mut windows: Vec<Arc<dyn WindowDriver>> = Vec::new();
+    let mut targeted: Vec<Arc<dyn TargetedInputDriver>> = Vec::new();
     match session {
         SessionType::X11 => {
             shots.push(Arc::new(X11Shot));
             inputs.push(Arc::new(X11Input));
             windows.push(Arc::new(X11Windows));
+            targeted.push(Arc::new(X11Targeted::default()));
         }
         SessionType::Wayland => {
             match desktop {
@@ -56,7 +60,7 @@ pub(super) async fn serve(
             inputs.push(Arc::new(EisInput::new(PortalConnector::new(bus))));
         }
     }
-    let registry = Registry::probe(shots, inputs, windows).await;
+    let registry = Registry::probe(shots, inputs, windows, targeted).await;
     for probe in &registry.probes {
         tracing::info!(id=probe.id,ok=probe.ok,detail=%probe.detail,"backend probe");
     }

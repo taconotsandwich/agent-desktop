@@ -1,4 +1,4 @@
-use fakes::{FakeInput, FakeShot, FakeWindows};
+use fakes::{FakeInput, FakeShot, FakeTargeted, FakeWindows};
 #[path = "support/fakes.rs"]
 mod fakes;
 
@@ -15,12 +15,14 @@ async fn registry_picks_first_ok_per_capability() {
         vec![Arc::new(FakeShot)],
         vec![Arc::new(FakeInput)],
         vec![Arc::new(FakeWindows)],
+        vec![Arc::new(FakeTargeted::default())],
     )
     .await;
     assert_eq!(r.shot().unwrap().id(), "fake-shot");
     assert_eq!(r.input().unwrap().id(), "fake-input");
     assert_eq!(r.windows().unwrap().id(), "fake-windows");
-    assert_eq!(r.probes.len(), 3);
+    assert_eq!(r.targeted().unwrap().id(), "fake-targeted");
+    assert_eq!(r.probes.len(), 4);
     assert!(r.probes.iter().all(|p| p.ok));
 }
 
@@ -84,10 +86,12 @@ async fn missing_input_does_not_disable_available_observations() {
         vec![Arc::new(FakeShot)],
         vec![],
         vec![Arc::new(FakeWindows)],
+        vec![],
     )
     .await;
     assert!(registry.shot().is_ok());
     assert!(registry.windows().is_ok());
     assert!(registry.input().is_err());
+    assert!(registry.targeted().is_none());
     assert_eq!(registry.probes.len(), 2);
 }

@@ -42,6 +42,12 @@ struct State {
     next_index: u64,
 }
 
+struct Targeting {
+    coordinate_input: &'static str,
+    targeted_input: Option<&'static str>,
+    targeted_clients: Option<&'static str>,
+}
+
 pub struct Engine {
     pub registry: Registry,
     pub session: SessionType,
@@ -91,6 +97,7 @@ impl Engine {
             Err(_) => vec![],
         };
         let (a11y_ok, a11y_detail) = a11y::status(&self.atspi).await;
+        let targeting = self.targeting();
         Ok(json!({
             "applications": apps::catalog(), "windows": windows,
             "capabilities": {
@@ -99,10 +106,35 @@ impl Engine {
                 "input": self.registry.input.as_ref().map(|driver|driver.id()),
                 "windows": self.registry.windows.as_ref().map(|driver|driver.id()),
                 "accessibility": {"available":a11y_ok,"detail":a11y_detail},
-                "coordinateInput":"foreground", "semanticInput":"application-dependent"
+                "coordinateInput": targeting.coordinate_input,
+                "targetedInput": targeting.targeted_input,
+                "targetedClients": targeting.targeted_clients,
+                "semanticInput":"application-dependent"
             },
             "probes":self.registry.probes, "session":self.session
         }))
+    }
+
+    /// How coordinate input reaches windows. `window` means clicks, drags,
+    /// scrolls and keys go to the target window without activating it or
+    /// moving the pointer; `foreground` means the window is activated first.
+    /// On Wayland only Xwayland windows can be addressed, so the session
+    /// stays `foreground` and `targeted_clients` says which windows differ.
+    fn targeting(&self) -> Targeting {
+        let targeted_input = self.registry.targeted().map(|driver| driver.id());
+        let targeted_clients = targeted_input.map(|_| match self.session {
+            SessionType::X11 => "all",
+            SessionType::Wayland => "xwayland",
+        });
+        Targeting {
+            coordinate_input: if targeted_clients == Some("all") {
+                "window"
+            } else {
+                "foreground"
+            },
+            targeted_input,
+            targeted_clients,
+        }
     }
 
     async fn get_app(&self, query: &str) -> Result<Value, ToolError> {

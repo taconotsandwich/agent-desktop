@@ -1,4 +1,4 @@
-use crate::platform::drivers::{InputDriver, Probe, ShotDriver, WindowDriver};
+use crate::platform::drivers::{InputDriver, Probe, ShotDriver, TargetedInputDriver, WindowDriver};
 use crate::types::ToolError;
 use std::sync::Arc;
 
@@ -7,6 +7,7 @@ pub struct Registry {
     pub shot: Option<Arc<dyn ShotDriver>>,
     pub input: Option<Arc<dyn InputDriver>>,
     pub windows: Option<Arc<dyn WindowDriver>>,
+    pub targeted: Option<Arc<dyn TargetedInputDriver>>,
     pub probes: Vec<Probe>,
 }
 
@@ -15,6 +16,7 @@ impl Registry {
         shots: Vec<Arc<dyn ShotDriver>>,
         inputs: Vec<Arc<dyn InputDriver>>,
         windows: Vec<Arc<dyn WindowDriver>>,
+        targeted: Vec<Arc<dyn TargetedInputDriver>>,
     ) -> Self {
         let mut registry = Self::default();
         for driver in shots {
@@ -44,6 +46,15 @@ impl Registry {
                 break;
             }
         }
+        for driver in targeted {
+            let probe = driver.probe().await;
+            let ok = probe.ok;
+            registry.probes.push(probe);
+            if ok {
+                registry.targeted = Some(driver);
+                break;
+            }
+        }
         registry
     }
 
@@ -59,6 +70,11 @@ impl Registry {
         self.windows
             .as_deref()
             .ok_or_else(|| unavailable("window targeting"))
+    }
+    /// Window-addressed input is optional: without it every coordinate
+    /// action takes the foreground path.
+    pub fn targeted(&self) -> Option<&dyn TargetedInputDriver> {
+        self.targeted.as_deref()
     }
 }
 

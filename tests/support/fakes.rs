@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 use agent_desktop::platform::drivers::{
-    Bbox, Button, InputDriver, Probe, Ref, Shot, ShotDriver, ShotFormat, ShotTarget, ToolError,
-    WindowDriver, WindowInfo,
+    Bbox, Button, InputDriver, Probe, Ref, Shot, ShotDriver, ShotFormat, ShotTarget,
+    TargetedInputDriver, ToolError, WindowDriver, WindowInfo,
 };
+use std::sync::Mutex;
 
 fn err() -> ToolError {
     ToolError {
@@ -15,6 +16,12 @@ fn err() -> ToolError {
 pub struct FakeShot;
 pub struct FakeInput;
 pub struct FakeWindows;
+/// Addresses every window except native Wayland ones and records each
+/// dispatch as one line.
+#[derive(Default)]
+pub struct FakeTargeted {
+    pub calls: Mutex<Vec<String>>,
+}
 
 #[async_trait::async_trait]
 impl ShotDriver for FakeShot {
@@ -154,5 +161,76 @@ impl WindowDriver for FakeWindows {
     }
     async fn move_resize(&self, _id: &Ref, _geo: Bbox) -> Result<(), ToolError> {
         Ok(())
+    }
+}
+
+impl FakeTargeted {
+    fn record(&self, call: String) -> Result<(), ToolError> {
+        self.calls.lock().unwrap().push(call);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl TargetedInputDriver for FakeTargeted {
+    fn id(&self) -> &'static str {
+        "fake-targeted"
+    }
+    async fn probe(&self) -> Probe {
+        Probe {
+            id: self.id(),
+            ok: true,
+            detail: "fake always ok".into(),
+        }
+    }
+    async fn resolve(&self, window: &WindowInfo) -> Result<Option<Ref>, ToolError> {
+        Ok((window.client_protocol.as_deref() != Some("wayland"))
+            .then(|| window.window_ref.clone()))
+    }
+    async fn click(
+        &self,
+        target: &Ref,
+        x: i32,
+        y: i32,
+        button: Button,
+        count: u32,
+    ) -> Result<(), ToolError> {
+        self.record(format!("click {} ({x},{y}) {button:?} x{count}", target.0))
+    }
+    async fn drag(
+        &self,
+        target: &Ref,
+        path: Vec<(i32, i32)>,
+        button: Button,
+        _dwell_ms: u64,
+        _step_ms: u64,
+    ) -> Result<(), ToolError> {
+        self.record(format!(
+            "drag {} {:?}..{:?} {button:?}",
+            target.0,
+            path.first(),
+            path.last()
+        ))
+    }
+    async fn scroll(
+        &self,
+        target: &Ref,
+        x: i32,
+        y: i32,
+        dx: i32,
+        dy: i32,
+    ) -> Result<(), ToolError> {
+        self.record(format!("scroll {} ({x},{y}) by ({dx},{dy})", target.0))
+    }
+    async fn type_text(&self, target: &Ref, text: String) -> Result<(), ToolError> {
+        self.record(format!("type {} {text:?}", target.0))
+    }
+    async fn key(
+        &self,
+        target: &Ref,
+        keys: Vec<agent_desktop::platform::keymap::Chord>,
+        _hold: std::time::Duration,
+    ) -> Result<(), ToolError> {
+        self.record(format!("key {} {}", target.0, keys.len()))
     }
 }
