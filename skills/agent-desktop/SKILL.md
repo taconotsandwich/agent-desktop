@@ -78,7 +78,7 @@ Supported target operations include:
 - `pressKey("ctrl+s")` for a key chord; `typeText(text)` and `paste(text)` for literal text.
 - `setValue(elementIndex, value)`, `selectText(elementIndex, text, options)`, and `performSecondaryAction(elementIndex, action)` when supported by the observed element.
 
-Use the connected tool's description for optional fields. Rich clipboard formats are unsupported. Coordinate input focuses the target; semantic actions can operate in the background only where the app supports them. If an action returns `action_pending`, observe before retrying to avoid applying it twice.
+Use the connected tool's description for optional fields. Rich clipboard formats are unsupported. Coordinate input focuses the target on Wayland; on X11 sessions, and for Xwayland windows on Wayland sessions, it is delivered to the window without activating it or moving the pointer. Qt menu shortcuts still need the active window; prefer element actions. Semantic actions can operate in the background only where the app supports them. If an action returns `action_pending`, observe before retrying to avoid applying it twice.
 
 `nodeRepl.write(value)` emits text; `nodeRepl.emitImage(bytes)` emits a PNG. Observation methods accept `{emit: false}` if the result is needed without automatic output. Ordinary errors preserve bindings; a timeout resets them. After `js_reset` or a timeout, observe and select the app again. Resetting JavaScript does not close applications.
 
