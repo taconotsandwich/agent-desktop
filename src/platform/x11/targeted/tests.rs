@@ -215,7 +215,8 @@ async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
     assert_eq!(presses.len(), 2);
     assert!(presses[1] > presses[0] && presses[1] - presses[0] < 400);
 
-    // Ctrl+Z carries Control in the state field; no modifier key is pressed.
+    // Ctrl+Z presses Control, then Z, and releases them in reverse; the
+    // state field carries Control from the Z press to the Control release.
     driver
         .key_in(
             &x11,
@@ -225,32 +226,50 @@ async fn synthetic_events_reach_the_window_without_moving_focus_or_pointer() {
         )
         .await
         .unwrap();
-    let events = drain(&x11);
-    assert_eq!(events.len(), 2, "{events:?}");
-    let Event::KeyPress(press) = &events[0] else {
-        panic!("{events:?}");
+    let (control, z) = {
+        let stroke = super::super::keyboard::read(&x11)
+            .unwrap()
+            .chord(&parse_chord("Ctrl+Z").unwrap())
+            .unwrap();
+        (stroke.modifiers[0], stroke.key)
     };
-    assert!(press.state.contains(KeyButMask::CONTROL));
-    let expected = super::super::keyboard::read(&x11)
-        .unwrap()
-        .chord(&parse_chord("Ctrl+Z").unwrap())
-        .unwrap()
-        .key;
-    assert_eq!(u32::from(press.detail), expected);
-    assert!(matches!(&events[1], Event::KeyRelease(release) if release.detail == press.detail));
+    let keys: Vec<(bool, u32, bool)> = drain(&x11)
+        .iter()
+        .map(|event| match event {
+            Event::KeyPress(press) => (
+                true,
+                u32::from(press.detail),
+                press.state.contains(KeyButMask::CONTROL),
+            ),
+            Event::KeyRelease(release) => (
+                false,
+                u32::from(release.detail),
+                release.state.contains(KeyButMask::CONTROL),
+            ),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            (true, control, false),
+            (true, z, true),
+            (false, z, true),
+            (false, control, true)
+        ]
+    );
 
-    // Literal text: '?' needs Shift, 'a' does not.
+    // Literal text: '?' needs Shift, 'a' does not. Shift goes down for '?'
+    // only, and its own press still reports the state before it.
     driver.type_in(&x11, &target_ref, "a?").await.unwrap();
-    let states: Vec<_> = drain(&x11)
+    let shifted: Vec<bool> = drain(&x11)
         .into_iter()
         .filter_map(|event| match event {
-            Event::KeyPress(press) => Some(press.state),
+            Event::KeyPress(press) => Some(press.state.contains(KeyButMask::SHIFT)),
             _ => None,
         })
         .collect();
-    assert_eq!(states.len(), 2);
-    assert!(!states[0].contains(KeyButMask::SHIFT));
-    assert!(states[1].contains(KeyButMask::SHIFT));
+    assert_eq!(shifted, vec![false, false, true], "a, Shift, ?");
 
     // A character the layout cannot produce fails before anything is sent.
     let error = driver.type_in(&x11, &target_ref, "aé").await.unwrap_err();

@@ -5,9 +5,10 @@
 //! event mask hands a synthetic core event to the client that created the
 //! destination window instead: the window manager never sees it, focus stays
 //! where it is and the pointer does not move. This is the mechanism behind
-//! `xdotool --window`. Modifier keys are never pressed; every event carries
-//! its modifiers in the `state` field, which toolkits such as Qt use to
-//! rebuild a keyboard state for synthetic events.
+//! `xdotool --window`. Chords press their modifier keys like a physical
+//! keyboard and every event carries the modifier state in its `state` field,
+//! so toolkits that track the modifier keys (Blender) and toolkits that
+//! rebuild the keyboard state from the field (Qt) agree.
 
 use super::{
     X11, connection, failed,
@@ -326,12 +327,24 @@ impl Sender {
             .map_err(|error| error.tool(true))
     }
 
-    async fn stroke(&mut self, keycode: u8, state: u16, hold: Duration) -> Result<(), ToolError> {
-        self.modifiers = state;
-        self.press_key(keycode).map_err(|error| error.tool(true))?;
+    /// Presses the keys in order and releases them in reverse, the way the
+    /// XTEST driver plays a stroke: modifiers first, then the key. Each key
+    /// comes with the modifier state once it is down, which its own release
+    /// and the next press report, since `state` describes the keyboard
+    /// before an event.
+    async fn stroke(&mut self, keys: &[(u8, u16)], hold: Duration) -> Result<(), ToolError> {
+        let base = self.modifiers;
+        for &(keycode, down) in keys {
+            self.press_key(keycode).map_err(|error| error.tool(true))?;
+            self.modifiers = down;
+        }
         tokio::time::sleep(hold).await;
-        self.release_key(keycode)
-            .map_err(|error| error.tool(true))?;
+        for &(keycode, down) in keys.iter().rev() {
+            self.modifiers = down;
+            self.release_key(keycode)
+                .map_err(|error| error.tool(true))?;
+        }
+        self.modifiers = base;
         tokio::time::sleep(Duration::from_millis(10)).await;
         Ok(())
     }
@@ -352,21 +365,34 @@ impl Drop for Sender {
     }
 }
 
-/// Keycode and core `state` for each stroke, resolved before anything is
-/// sent: a symbol the layout cannot produce fails with nothing typed, so the
-/// caller's paste fallback does not duplicate text. `Keyboard` wraps raw XKB
-/// pointers and must not live across an await.
+/// Keycodes of each stroke in press order, modifiers first, each paired with
+/// the core `state` once it is down: the state its release reports and the
+/// next press carries. Everything is resolved before anything is sent, so a
+/// symbol the layout cannot produce fails with nothing typed and the caller's
+/// paste fallback does not duplicate text. `Keyboard` wraps raw XKB pointers
+/// and must not live across an await.
 fn plan(
     x11: &X11,
     strokes: impl FnOnce(&Keyboard) -> Result<Vec<Stroke>, BackendError>,
-) -> Result<Vec<(u8, u16)>, BackendError> {
+) -> Result<Vec<Vec<(u8, u16)>>, BackendError> {
     let keyboard = super::keyboard::read(x11)?.ignoring_held();
     strokes(&keyboard)?
         .iter()
         .map(|stroke| {
-            let keycode = u8::try_from(stroke.key)
-                .map_err(|_| keymap::unsupported("keycode does not fit a core event"))?;
-            Ok((keycode, keyboard.mask(&stroke.modifiers)))
+            let keys: Vec<u32> = stroke
+                .modifiers
+                .iter()
+                .chain(std::iter::once(&stroke.key))
+                .copied()
+                .collect();
+            keys.iter()
+                .enumerate()
+                .map(|(index, &key)| -> Result<(u8, u16), BackendError> {
+                    let keycode = u8::try_from(key)
+                        .map_err(|_| keymap::unsupported("keycode does not fit a core event"))?;
+                    Ok((keycode, keyboard.mask(&keys[..=index])))
+                })
+                .collect()
         })
         .collect()
 }
@@ -493,10 +519,8 @@ impl X11Targeted {
             text.chars().map(|ch| keyboard.literal(ch)).collect()
         })
         .map_err(|error| error.tool(false))?;
-        for (keycode, state) in strokes {
-            sender
-                .stroke(keycode, state, Duration::from_millis(5))
-                .await?;
+        for keys in strokes {
+            sender.stroke(&keys, Duration::from_millis(5)).await?;
         }
         Ok(())
     }
@@ -516,8 +540,8 @@ impl X11Targeted {
             keys.iter().map(|chord| keyboard.chord(chord)).collect()
         })
         .map_err(|error| error.tool(false))?;
-        for (keycode, state) in strokes {
-            sender.stroke(keycode, state, hold).await?;
+        for keys in strokes {
+            sender.stroke(&keys, hold).await?;
         }
         Ok(())
     }
