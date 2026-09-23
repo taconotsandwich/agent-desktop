@@ -1,27 +1,59 @@
 use super::*;
 use serde_json::Value;
 
-/// Blender takes the foreground with a real key press; returns the active
-/// window so a later check can prove the background edit left it alone.
-async fn blender_active(client: &mut Joiner) -> Result<Value> {
+/// Blender takes the foreground; returns its active window so a later
+/// check can prove the background edit left it alone. A key press does that
+/// on a Wayland seat, where input goes through the focused window. On an X11
+/// seat input reaches the window without activating it, so the window
+/// manager is asked to activate Blender the way a taskbar would.
+async fn blender_active(seat: &Seat, client: &mut Joiner) -> Result<Value> {
+    let blender = agent_desktop::desktop::apps::find("blender.desktop")
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let owned = |window: &Value| {
+        serde_json::from_value::<agent_desktop::platform::drivers::WindowInfo>(window.clone())
+            .is_ok_and(|window| blender.owns(&window))
+    };
     client
-        .eval("const blender = await agentdesktop.getApp('blender.desktop'); await blender.pressKey('Escape');")
+        .eval("const blender = await agentdesktop.getApp('blender.desktop');")
         .await?;
-    let state = client.json("await agentdesktop.getState();").await?;
-    let active = state["windows"]
-        .as_array()
-        .context("windows")?
-        .iter()
-        .find(|window| window["is_active"] == true)
-        .context("active app")?
-        .clone();
-    anyhow::ensure!(
-        agent_desktop::desktop::apps::find("blender.desktop")
-            .map_err(|error| anyhow::anyhow!(error.message))?
-            .owns(&serde_json::from_value(active.clone())?),
-        "Blender has focus before the background edit"
-    );
-    Ok(active)
+    if seat.environment.get("XDG_SESSION_TYPE").map(String::as_str) == Some("x11") {
+        let state = client.json("await agentdesktop.getState();").await?;
+        let window = state["windows"]
+            .as_array()
+            .context("windows")?
+            .iter()
+            .find(|window| owned(window))
+            .context("Blender window")?;
+        let id = window["window_ref"]
+            .as_str()
+            .and_then(|window_ref| window_ref.strip_prefix("x11:"))
+            .context("Blender X11 window")?;
+        let status = tokio::process::Command::new("wmctrl")
+            .args(["-i", "-a", id])
+            .envs(&seat.environment)
+            .status()
+            .await?;
+        anyhow::ensure!(status.success(), "wmctrl activates Blender");
+    } else {
+        client.eval("await blender.pressKey('Escape');").await?;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let state = client.json("await agentdesktop.getState();").await?;
+        let active = state["windows"]
+            .as_array()
+            .context("windows")?
+            .iter()
+            .find(|window| window["is_active"] == true);
+        if let Some(active) = active.filter(|window| owned(window)) {
+            return Ok(active.clone());
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Blender has focus before the background edit"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
 async fn still_active(client: &mut Joiner, active: &Value) -> Result<()> {
@@ -74,7 +106,7 @@ async fn qa_background_semantic_edit() -> Result<()> {
     let index = dimension_control(&state)?["index"]
         .as_u64()
         .context("index")?;
-    let active = blender_active(&mut client).await?;
+    let active = blender_active(&seat, &mut client).await?;
     client
         .eval(&format!("await krita.setValue({index},'512');"))
         .await?;
@@ -122,7 +154,7 @@ async fn edit_by_coordinates(
     let (width, height) = client
         .screenshot("krita", &seat.artifacts.join("dialog.png"))
         .await?;
-    let active = blender_active(client).await?;
+    let active = blender_active(seat, client).await?;
     let x = (bbox[0] + bbox[2] / 2.0 - f64::from(geometry.x)) * f64::from(width)
         / f64::from(geometry.w);
     let y = (bbox[1] + bbox[3] / 2.0 - f64::from(geometry.y)) * f64::from(height)
