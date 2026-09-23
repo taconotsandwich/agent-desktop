@@ -1,5 +1,16 @@
 use super::*;
 use crate::platform::{drivers::Bbox, keymap::parse_chord, x11::testing};
+use x11rb::{
+    connection::Connection as _,
+    protocol::{
+        Event,
+        xproto::{
+            AtomEnum, ConnectionExt as _, CreateWindowAux, KeyButMask, PropMode, Window,
+            WindowClass,
+        },
+    },
+    wrapper::ConnectionExt as _,
+};
 
 fn drain(x11: &X11) -> Vec<Event> {
     let mut events = Vec::new();
