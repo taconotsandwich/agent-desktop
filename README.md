@@ -36,6 +36,8 @@ Each cell says what an `agentdesktop` call does on that backend:
 
 - `background`: the target window is not activated and the real pointer
   does not move.
+- `on request`: background when the application was selected with
+  `agentdesktop.getApp(query, {background: true})`, foreground otherwise.
 - `foreground`: the window is activated first and the pointer is moved onto
   it. The user's focus and cursor change.
 - `inside seat`: the action happens inside the private compositor, which
@@ -49,15 +51,15 @@ Each cell says what an `agentdesktop` call does on that backend:
 | `getAXState` | background | background | background | background |
 | `getScreenshot` | background (KWin renders the window itself) | background with a compositing manager; occluded regions are undefined without one | foreground (the extension activates the window before capturing) | background |
 | `click(index)` on an element with an accessibility action | background | background | background | background |
-| `click([x, y])`, `click(index)` without an action, right, middle and double clicks | foreground; background for Xwayland windows | background | foreground; background for Xwayland windows | inside seat |
-| `drag` | foreground; background for Xwayland windows | background; a drag the application turns into drag-and-drop may grab the real pointer | foreground; background for Xwayland windows | inside seat |
-| `scroll` | foreground; background for Xwayland windows | background; Qt applications ignore synthetic wheel events (see toolkit notes) | foreground; background for Xwayland windows | inside seat |
-| `pressKey` | foreground; background for Xwayland windows | background; the window is told it has focus for the keys, so toolkit shortcuts fire | foreground; background for Xwayland windows | inside seat |
-| `typeText` | foreground; background for Xwayland windows | background for characters the keyboard layout can produce; other text falls back to `paste` | foreground; background for Xwayland windows | inside seat |
-| `paste(text)` | foreground; the clipboard is replaced and restored 1.5 s later. Xwayland windows: background, using the X11 selection | background; the clipboard is replaced and restored | foreground, clipboard replaced and restored. Xwayland windows: background, using the X11 selection | inside seat, private clipboard |
+| `click([x, y])`, `click(index)` without an action, right, middle and double clicks | foreground; on request for Xwayland windows | on request | foreground; on request for Xwayland windows | inside seat |
+| `drag` | foreground; on request for Xwayland windows | on request; a drag the application turns into drag-and-drop may grab the real pointer | foreground; on request for Xwayland windows | inside seat |
+| `scroll` | foreground; on request for Xwayland windows | on request; Qt applications ignore synthetic wheel events (see toolkit notes) | foreground; on request for Xwayland windows | inside seat |
+| `pressKey` | foreground; on request for Xwayland windows | on request; the window is told it has focus for the keys, so toolkit shortcuts fire | foreground; on request for Xwayland windows | inside seat |
+| `typeText` | foreground; on request for Xwayland windows | on request for characters the keyboard layout can produce; other text falls back to `paste` | foreground; on request for Xwayland windows | inside seat |
+| `paste(text)` | foreground; the clipboard is replaced and restored 1.5 s later. Xwayland windows: on request, using the X11 selection | on request; the clipboard is replaced and restored | foreground, clipboard replaced and restored. Xwayland windows: on request, using the X11 selection | inside seat, private clipboard |
 | `paste` with `format: "md"` or `"html"` | unsupported | unsupported | unsupported | unsupported |
 | `setValue`, `selectText`, `performSecondaryAction` | background where the toolkit exposes them | same | same | same |
-| Xwayland windows on a Wayland session | background input over `DISPLAY` | not applicable | background input over `DISPLAY`, best effort | same as KDE Wayland |
+| Xwayland windows on a Wayland session | input over `DISPLAY` on request | not applicable | input over `DISPLAY` on request, best effort | same as KDE Wayland |
 
 Background input on X11 and Xwayland is window-targeted: events are handed
 to the client that owns the window with `XSendEvent`, so the window manager
@@ -66,6 +68,14 @@ This is the mechanism behind `xdotool --window`. On a Wayland session the
 server connects to Xwayland through `DISPLAY` and matches the compositor's
 window to the X11 client by process id and title; native Wayland windows
 keep the foreground path.
+
+Window-targeted input is opt-in per application, because each toolkit
+decides what to do with synthetic events (see the toolkit notes) and an
+application that mishandles them can fail without an error. Select the
+application with `agentdesktop.getApp(query, {background: true})` to send
+its clicks, drags, scrolls, keys and text to its window. Selecting it again
+without the option returns it to the foreground path, and `js_reset`
+clears the choice for every application.
 
 Pasting into an Xwayland window serves the text on the X11 clipboard with
 `xclip`, because an X11 client reads that selection and the compositor
@@ -116,6 +126,9 @@ window behave as if it were active while the real focus stays where it is:
 - Chromium, Electron and Firefox may ignore synthetic events, and
   applications that opt out of `send_event` input (xterm's `allowSendEvents`
   is off by default) drop them.
+- Blender opened its file browser under window-targeted input in the QA
+  suite but did not complete the save, for a reason not yet found, so the
+  suite drives Blender in the foreground.
 - A window that the window manager decorates receives input only inside
   its client area; points on the title bar or borders are rejected before
   anything is sent.
@@ -128,8 +141,9 @@ while the application is in the background is not selected until the user
 or the window manager activates it; the blocked window takes input again
 once the dialog is closed.
 
-When targeted delivery does not reach an application, the accessibility
-actions and the foreground path on a virtual seat remain available.
+When targeted delivery does not reach an application, select it without
+the option to use the foreground path, or use the accessibility actions;
+inside a virtual seat the foreground path never disturbs the user.
 
 ## Compared with Codex Computer Use on macOS
 
@@ -149,7 +163,8 @@ What agent-desktop matches today:
   background on every backend, with diffs between observations.
 - Screenshots run in the background on KDE and inside seats.
 - Raw input runs in the background on X11 sessions and for Xwayland
-  windows on Wayland sessions.
+  windows on Wayland sessions, for applications selected with
+  `background: true`.
 
 What it does not:
 
@@ -165,19 +180,24 @@ What it does not:
 `agentdesktop.getState().capabilities` reports what the running server can
 do:
 
-- `coordinateInput` is `"window"` when every coordinate action is delivered
-  to the window without activating it (X11 sessions with the SendEvent
-  driver) and `"foreground"` otherwise.
-- `targetedInput` is the id of the window-targeted driver, currently
-  `"x11-sendevent"`, or `null` when none probed successfully.
-- `targetedClients` is `"all"` on X11, `"xwayland"` on a Wayland session
-  with a reachable `DISPLAY`, or `null`.
+- `coordinateInput` is `"foreground"`: an application selected without
+  `background: true` has its window activated and the pointer moved for
+  coordinate actions.
+- `targetedInput` is the id of the window-targeted driver that applications
+  selected with `background: true` use, currently `"x11-sendevent"`, or
+  `null` when none probed successfully.
+- `targetedClients` says which windows such an application can reach:
+  `"all"` on X11, `"xwayland"` on a Wayland session with a reachable
+  `DISPLAY`, or `null`.
 - `screenshot`, `input` and `windows` name the drivers in use, and
   `accessibility` reports whether the AT-SPI bus is reachable.
 
 Each window in `getState().windows` carries `client_protocol` when the
-backend can tell: X11 sessions report `"x11"`. KWin's scripting API and the
-GNOME extension do not report the client type of a window, so on Wayland
-sessions the field is `null` and the driver decides per action by looking
-the window's process up in the Xwayland client list. A window found there
-takes background input; any other takes the foreground path.
+backend can tell: X11 sessions report `"x11"`, and the GNOME extension
+reports `"x11"` for Xwayland windows and `"wayland"` for native ones.
+KWin's scripting API does not report the client type of a window, so on
+KDE Wayland sessions the field is `null`. On a Wayland session the driver
+looks every window not reported as `"wayland"` up in the Xwayland client
+list by process and title, per action. A window found there takes
+background input when its application asked for it; any other takes the
+foreground path.
