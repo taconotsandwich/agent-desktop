@@ -1,12 +1,10 @@
 use super::*;
 use serde_json::Value;
 
-/// Blender takes the foreground; returns its active window so a later
-/// check can prove the background edit left it alone. A key press does that
-/// on a Wayland seat, where input goes through the focused window. On an X11
-/// seat input reaches the window without activating it, so the window
-/// manager is asked to activate Blender the way a taskbar would.
-async fn blender_active(seat: &Seat, client: &mut Joiner) -> Result<Value> {
+/// Blender takes the foreground: it is selected without background input,
+/// so a key press activates it first. Returns its active window so a later
+/// check can prove the background edit left it alone.
+async fn blender_active(client: &mut Joiner) -> Result<Value> {
     let blender = agent_desktop::desktop::apps::find("blender.desktop")
         .map_err(|error| anyhow::anyhow!(error.message))?;
     let owned = |window: &Value| {
@@ -14,29 +12,8 @@ async fn blender_active(seat: &Seat, client: &mut Joiner) -> Result<Value> {
             .is_ok_and(|window| blender.owns(&window))
     };
     client
-        .eval("const blender = await agentdesktop.getApp('blender.desktop');")
+        .eval("const blender = await agentdesktop.getApp('blender.desktop'); await blender.pressKey('Escape');")
         .await?;
-    if seat.environment.get("XDG_SESSION_TYPE").map(String::as_str) == Some("x11") {
-        let state = client.json("await agentdesktop.getState();").await?;
-        let window = state["windows"]
-            .as_array()
-            .context("windows")?
-            .iter()
-            .find(|window| owned(window))
-            .context("Blender window")?;
-        let id = window["window_ref"]
-            .as_str()
-            .and_then(|window_ref| window_ref.strip_prefix("x11:"))
-            .context("Blender X11 window")?;
-        let status = tokio::process::Command::new("wmctrl")
-            .args(["-i", "-a", id])
-            .envs(&seat.environment)
-            .status()
-            .await?;
-        anyhow::ensure!(status.success(), "wmctrl activates Blender");
-    } else {
-        client.eval("await blender.pressKey('Escape');").await?;
-    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let state = client.json("await agentdesktop.getState();").await?;
@@ -106,7 +83,7 @@ async fn qa_background_semantic_edit() -> Result<()> {
     let index = dimension_control(&state)?["index"]
         .as_u64()
         .context("index")?;
-    let active = blender_active(&seat, &mut client).await?;
+    let active = blender_active(&mut client).await?;
     client
         .eval(&format!("await krita.setValue({index},'512');"))
         .await?;
@@ -125,10 +102,10 @@ async fn capabilities(client: &mut Joiner) -> Result<Value> {
     Ok(client.json("await agentdesktop.getState();").await?["capabilities"].clone())
 }
 
-/// Clicks Krita's width field at coordinates derived from its accessibility
-/// bounds and the dialog screenshot, selects the text and types a new size
-/// while Blender stays the active window; the pointer never has to visit
-/// the dialog. The dialog must not be a native Wayland window: X11 sessions
+/// Selects Krita for background input, clicks its width field at
+/// coordinates derived from its accessibility bounds and the dialog
+/// screenshot, selects the text and types a new size while Blender stays
+/// the active window; the pointer never has to visit the dialog. The dialog must not be a native Wayland window: X11 sessions
 /// report `x11`, and a Wayland compositor either reports `x11` for an
 /// Xwayland window or nothing at all, as KWin does.
 async fn edit_by_coordinates(
@@ -138,7 +115,9 @@ async fn edit_by_coordinates(
     record: &str,
 ) -> Result<()> {
     client
-        .eval("const krita = await agentdesktop.getApp('org.kde.krita.desktop');")
+        .eval(
+            "const krita = await agentdesktop.getApp('org.kde.krita.desktop', {background: true});",
+        )
         .await?;
     new_krita_document(client, "krita").await?;
     let state = client.json("await krita.getAXState();").await?;
@@ -155,7 +134,7 @@ async fn edit_by_coordinates(
     let (width, height) = client
         .screenshot("krita", &seat.artifacts.join("dialog.png"))
         .await?;
-    let active = blender_active(seat, client).await?;
+    let active = blender_active(client).await?;
     let x = (bbox[0] + bbox[2] / 2.0 - f64::from(geometry.x)) * f64::from(width)
         / f64::from(geometry.w);
     let y = (bbox[1] + bbox[3] / 2.0 - f64::from(geometry.y)) * f64::from(height)
@@ -185,7 +164,7 @@ async fn edit_by_coordinates(
     Ok(())
 }
 
-/// X11 seats deliver coordinate input to every window.
+/// X11 seats can deliver coordinate input to every window.
 #[tokio::test]
 #[ignore = "requires an isolated Linux desktop with Krita and Blender"]
 async fn qa_background_coordinate_input() -> Result<()> {
@@ -203,8 +182,8 @@ async fn qa_background_coordinate_input() -> Result<()> {
     .await?;
     let capabilities = capabilities(&mut client).await?;
     anyhow::ensure!(
-        capabilities["coordinateInput"] == "window",
-        "X11 seat addresses windows: {capabilities}"
+        capabilities["coordinateInput"] == "foreground" && capabilities["targetedClients"] == "all",
+        "X11 seat addresses every window on request: {capabilities}"
     );
     edit_by_coordinates(&seat, &mut client, &capabilities, "background-coordinate").await?;
     client.close().await?;

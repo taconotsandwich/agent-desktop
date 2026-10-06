@@ -95,16 +95,13 @@ async fn observations_authorize_only_the_current_window_and_fresh_indices() {
 }
 
 #[tokio::test]
-async fn capabilities_report_where_coordinate_input_goes() {
+async fn capabilities_report_which_windows_can_take_background_input() {
     let plain = Registry::probe(vec![], vec![], vec![Arc::new(FakeWindows)], vec![]).await;
     let engine = Engine::new(plain, SessionType::X11, Arc::new(AtspiConnection::new()));
-    let targeting = engine.targeting();
-    assert_eq!(targeting.coordinate_input, "foreground");
-    assert_eq!(targeting.targeted_input, None);
-    assert_eq!(targeting.targeted_clients, None);
-    for (session, coordinate_input, clients) in [
-        (SessionType::X11, "window", "all"),
-        (SessionType::Wayland, "foreground", "xwayland"),
+    assert_eq!(engine.targeted_clients(), None);
+    for (session, clients) in [
+        (SessionType::X11, "all"),
+        (SessionType::Wayland, "xwayland"),
     ] {
         let registry = Registry::probe(
             vec![],
@@ -114,28 +111,25 @@ async fn capabilities_report_where_coordinate_input_goes() {
         )
         .await;
         let engine = Engine::new(registry, session, Arc::new(AtspiConnection::new()));
-        let targeting = engine.targeting();
-        assert_eq!(targeting.coordinate_input, coordinate_input);
-        assert_eq!(targeting.targeted_input, Some("fake-targeted"));
-        assert_eq!(targeting.targeted_clients, Some(clients));
+        assert_eq!(engine.targeted_clients(), Some(clients));
     }
 }
 
 #[tokio::test]
-async fn targeted_windows_take_input_without_the_seat() {
+async fn background_apps_take_input_without_the_seat() {
     let request = |method: &str, args: serde_json::Value| -> Request {
         serde_json::from_value(json!({"target":"fake.desktop","method":method,"args":args}))
             .unwrap()
     };
-    // No input driver: the foreground path cannot even activate the window.
+    let foreground = |error: ToolError| {
+        // No input driver: the foreground path cannot even activate the window.
+        assert_eq!(error.code, "unsupported");
+        assert!(error.message.contains("input"), "{}", error.message);
+    };
+    let click = || request("click", json!({"target":[400.0,300.0]}));
     let plain = Registry::probe(vec![], vec![], vec![Arc::new(FakeWindows)], vec![]).await;
     let engine = observed(plain, SessionType::X11).await;
-    let error = engine
-        .dispatch(request("click", json!({"target":[400.0,300.0]})))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, "unsupported");
-    assert!(error.message.contains("input"), "{}", error.message);
+    foreground(engine.dispatch(click()).await.unwrap_err());
 
     let targeted = Arc::new(FakeTargeted::default());
     let registry = Registry::probe(
@@ -146,6 +140,16 @@ async fn targeted_windows_take_input_without_the_seat() {
     )
     .await;
     let engine = observed(registry, SessionType::X11).await;
+    // A window the driver can reach still takes the foreground path until
+    // its app asks for background input.
+    foreground(engine.dispatch(click()).await.unwrap_err());
+    assert!(targeted.calls.lock().unwrap().is_empty());
+    engine
+        .state
+        .lock()
+        .await
+        .background
+        .insert("fake.desktop".into());
     for (method, args) in [
         (
             "click",

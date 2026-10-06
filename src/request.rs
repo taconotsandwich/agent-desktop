@@ -26,6 +26,8 @@ pub enum Operation {
     ListApps {},
     GetApp {
         query: String,
+        #[serde(default)]
+        background: bool,
     },
     #[serde(rename = "getAXState")]
     GetAxState(ObservationOptions),

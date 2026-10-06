@@ -53,3 +53,21 @@ fn malformed_actions_are_rejected_before_dispatch() {
         .is_err()
     );
 }
+
+#[test]
+fn get_app_asks_for_background_input_only_when_told() {
+    let get_app = |args: serde_json::Value| {
+        serde_json::from_value::<Request>(json!({"method":"getApp","target":null,"args":args}))
+    };
+    for (args, expected) in [
+        (json!({"query":"Krita"}), false),
+        (json!({"query":"Krita","background":false}), false),
+        (json!({"query":"Krita","background":true}), true),
+    ] {
+        let Operation::GetApp { background, .. } = get_app(args).unwrap().operation else {
+            panic!("getApp operation")
+        };
+        assert_eq!(background, expected);
+    }
+    assert!(get_app(json!({"query":"Krita","background":"yes"})).is_err());
+}

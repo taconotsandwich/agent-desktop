@@ -80,8 +80,8 @@ globalThis.agentdesktop = Object.freeze({
   async listApps(options = {}) {
     return __observe(__invoke("listApps", null), options);
   },
-  async getApp(query) {
-    const result = __invoke("getApp", null, { query });
+  async getApp(query, options = {}) {
+    const result = __invoke("getApp", null, { query, ...options });
     __observe(result.state);
     return new Target(result.id);
   },

@@ -19,7 +19,7 @@ use base64::Engine as _;
 use geometry::Frame;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -38,14 +38,10 @@ struct Observation {
 #[derive(Default)]
 struct State {
     apps: HashMap<String, Application>,
+    /// Apps selected with `getApp(query, {background: true})`.
+    background: HashSet<String>,
     observations: HashMap<String, Observation>,
     next_index: u64,
-}
-
-struct Targeting {
-    coordinate_input: &'static str,
-    targeted_input: Option<&'static str>,
-    targeted_clients: Option<&'static str>,
 }
 
 pub struct Engine {
@@ -75,7 +71,7 @@ impl Engine {
         match &request.operation {
             Operation::GetState {} => self.desktop_state().await,
             Operation::ListApps {} => Ok(json!(apps::catalog())),
-            Operation::GetApp { query } => self.get_app(query).await,
+            Operation::GetApp { query, background } => self.get_app(query, *background).await,
             Operation::GetAxState(options) => {
                 self.ax_state(request.target()?, options.disable_diffing)
                     .await
@@ -97,7 +93,6 @@ impl Engine {
             Err(_) => vec![],
         };
         let (a11y_ok, a11y_detail) = a11y::status(&self.atspi).await;
-        let targeting = self.targeting();
         Ok(json!({
             "applications": apps::catalog(), "windows": windows,
             "capabilities": {
@@ -106,38 +101,27 @@ impl Engine {
                 "input": self.registry.input.as_ref().map(|driver|driver.id()),
                 "windows": self.registry.windows.as_ref().map(|driver|driver.id()),
                 "accessibility": {"available":a11y_ok,"detail":a11y_detail},
-                "coordinateInput": targeting.coordinate_input,
-                "targetedInput": targeting.targeted_input,
-                "targetedClients": targeting.targeted_clients,
-                "semanticInput":"application-dependent"
+                "coordinateInput":"foreground", "semanticInput":"application-dependent",
+                "targetedInput": self.registry.targeted().map(|driver|driver.id()),
+                "targetedClients": self.targeted_clients()
             },
             "probes":self.registry.probes, "session":self.session
         }))
     }
 
-    /// How coordinate input reaches windows. `window` means clicks, drags,
-    /// scrolls and keys go to the target window without activating it or
-    /// moving the pointer; `foreground` means the window is activated first.
-    /// On Wayland only Xwayland windows can be addressed, so the session
-    /// stays `foreground` and `targeted_clients` says which windows differ.
-    fn targeting(&self) -> Targeting {
-        let targeted_input = self.registry.targeted().map(|driver| driver.id());
-        let targeted_clients = targeted_input.map(|_| match self.session {
+    /// Windows that take coordinate input without being activated or the
+    /// pointer moving, once their app is selected with
+    /// `getApp(query, {background: true})`: every window on X11, Xwayland
+    /// windows on Wayland, none without a targeted driver. Other apps and
+    /// other windows take the foreground path.
+    fn targeted_clients(&self) -> Option<&'static str> {
+        self.registry.targeted().map(|_| match self.session {
             SessionType::X11 => "all",
             SessionType::Wayland => "xwayland",
-        });
-        Targeting {
-            coordinate_input: if targeted_clients == Some("all") {
-                "window"
-            } else {
-                "foreground"
-            },
-            targeted_input,
-            targeted_clients,
-        }
+        })
     }
 
-    async fn get_app(&self, query: &str) -> Result<Value, ToolError> {
+    async fn get_app(&self, query: &str, background: bool) -> Result<Value, ToolError> {
         let app = apps::find(query)?;
         let windows = self.registry.windows()?.query().await?;
         if !windows.iter().any(|window| app.owns(window)) {
@@ -164,7 +148,15 @@ impl Engine {
             }
         }
         let id = app.id.clone();
-        self.state.lock().await.apps.insert(id.clone(), app);
+        {
+            let mut state = self.state.lock().await;
+            state.apps.insert(id.clone(), app);
+            if background {
+                state.background.insert(id.clone());
+            } else {
+                state.background.remove(&id);
+            }
+        }
         // Compositor window lists can flicker between the selection probe and
         // the first observation (splash teardown, extension refresh). Ride out
         // a transient empty list instead of reporting the app as closed.

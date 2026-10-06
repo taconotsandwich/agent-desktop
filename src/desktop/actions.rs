@@ -14,8 +14,9 @@ use std::time::Duration;
 /// debounce, short enough to stay well inside auto-repeat delays.
 const TARGETED_HOLD: Duration = Duration::from_millis(10);
 
-/// Window-addressed delivery for one action, when the registry's targeted
-/// driver can reach the app's current window.
+/// Window-addressed delivery for one action, when the app asked for
+/// background input and the registry's targeted driver can reach its current
+/// window.
 type Route<'a> = Option<(&'a dyn TargetedInputDriver, Ref)>;
 
 fn center(element: &FlatElement, missing: &str) -> Result<(i32, i32), ToolError> {
@@ -222,11 +223,15 @@ impl Engine {
 
     /// Whether the app's current window takes window-addressed input. `None`
     /// means the foreground path: activate the window, move the pointer,
-    /// then dispatch through the seat.
+    /// then dispatch through the seat. Only apps selected with
+    /// `getApp(query, {background: true})` are routed to their window.
     async fn route(&self, id: &str) -> Result<Route<'_>, ToolError> {
         let Some(driver) = self.registry.targeted() else {
             return Ok(None);
         };
+        if !self.state.lock().await.background.contains(id) {
+            return Ok(None);
+        }
         let window = self.window(id).await?;
         Ok(driver
             .resolve(&window)
